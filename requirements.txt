@@ -7,4 +7,4 @@ pystray>=0.19.5
 # pystray accepts any Pillow. Majors ship every October and have broken it before, so the
 # ceiling is deliberate — raise it once Pillow 13 has been tried against the tray icon.
 pillow>=10.0.0,<13
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
