@@ -19,10 +19,15 @@ python -c "import os,dotenv;dotenv.load_dotenv();print('KEY SET:', bool(os.envir
 ## The user's voice is sensitive data
 
 - Recorded audio is speech from the user's own room. Treat it as private.
-- Only one recording is kept on disk: `logs/last_recording.wav`, overwritten each time,
-  and only so a failed upload can be retried.
+- At most one recording exists on disk: `logs/last_recording.wav`. It is written just
+  before an upload and deleted as soon as the text lands in a window, so a successful
+  dictation leaves nothing behind and an interrupted one leaves exactly one file to retry.
 - Transcripts are **not** written to the log by default — only their character count.
   `LOG_TRANSCRIPTS=true` is a debugging switch and stays off otherwise.
+- One deliberate exception: when the clipboard itself is unusable, the transcript goes to
+  `logs/last_transcript.txt` rather than being discarded — losing what someone just said is
+  the worse outcome. It is overwritten each time and excluded from git. Do not extend this
+  to any other path without saying so plainly to the user.
 - `*.wav` and `logs/` are in `.gitignore`. Never commit a recording.
 - Audio is uploaded to ElevenLabs for transcription. That is the whole point of the tool,
   but it must be stated in the README so the user knows where their voice goes.
@@ -30,9 +35,12 @@ python -c "import os,dotenv;dotenv.load_dotenv();print('KEY SET:', bool(os.envir
 ## Clipboard hygiene
 
 - The transcript passes through the Windows clipboard. Whatever the user had copied before
-  is saved and restored afterwards.
-- Restoration must happen on the error path too — a failed paste must not leave the
-  transcript sitting on the clipboard indefinitely unless that is the configured fallback.
+  is saved and restored after a paste that worked.
+- After a paste that **failed**, the transcript deliberately stays on the clipboard, so the
+  user can press Ctrl+V themselves. Restoring it there would destroy the only copy.
+- The two failure modes must never be conflated. `ClipboardUnavailableError` means the text
+  never reached the clipboard and Ctrl+V would find nothing; `PasteFailedError` means it is
+  there and Ctrl+V works. Telling the user the wrong one loses their words.
 
 ## Input and boundaries
 

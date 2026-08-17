@@ -31,6 +31,18 @@ class InjectionError(Exception):
     """The text could not be delivered. The message is shown to the user."""
 
 
+class ClipboardUnavailableError(InjectionError):
+    """The text never reached the clipboard, so pressing Ctrl+V would not recover it.
+
+    Kept separate from PasteFailedError because the two need opposite advice: telling
+    someone to press Ctrl+V when the clipboard write failed sends them after nothing.
+    """
+
+
+class PasteFailedError(InjectionError):
+    """The text is sitting on the clipboard; only the keystroke was refused."""
+
+
 def _modifiers_are_down() -> bool:
     """True while any modifier key is physically held."""
     get_state = ctypes.windll.user32.GetAsyncKeyState  # type: ignore[attr-defined]
@@ -66,7 +78,7 @@ def _write_clipboard(text: str) -> None:
     try:
         pyperclip.copy(text)
     except Exception as exc:
-        raise InjectionError(f"could not write to the clipboard: {exc}") from exc
+        raise ClipboardUnavailableError(f"could not write to the clipboard: {exc}") from exc
 
 
 def _send_paste(keyboard: Controller) -> None:
@@ -75,7 +87,7 @@ def _send_paste(keyboard: Controller) -> None:
             keyboard.press("v")
             keyboard.release("v")
     except Exception as exc:
-        raise InjectionError(f"the paste keystroke was rejected: {exc}") from exc
+        raise PasteFailedError(f"the paste keystroke was rejected: {exc}") from exc
 
 
 def inject_text(

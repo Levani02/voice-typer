@@ -71,10 +71,34 @@ the paste fails. That restore lives in a `finally` block.
 | Path | Contents |
 | --- | --- |
 | `logs/voice_typer.log` | rotating log, 1 MB × 3. No API key. No transcript unless `LOG_TRANSCRIPTS=true` |
-| `logs/last_recording.wav` | the most recent recording, kept only so a failed upload can be retried |
+| `logs/last_recording.wav` | written before every upload, deleted once the text lands in a window |
+| `logs/last_transcript.txt` | only written when the clipboard is unusable, so the words are not lost |
 | `logs/usage.json` | cumulative seconds and estimated cost, shown in the tray menu |
 
-All three are excluded from git.
+All of them are excluded from git.
+
+## Losing nothing
+
+Two rules, both of which exist because the alternative is the user saying something twice:
+
+**The audio is on disk before it is uploaded.** Whatever kills the worker — a crash, the
+power going out, Quit clicked while the icon is amber — leaves a file the tray menu can
+re-send. It is deleted only after the text has actually been pasted. Quit also waits up to
+15 seconds for a transcription already in flight, rather than abandoning it.
+
+**Jobs are serialised, and the icon describes the live one.** If a second dictation is
+finished while the first is still uploading, it queues; when it starts for real it puts the
+icon back to amber. Retry refuses outright while anything is running — clicking it twice
+used to paste the same words twice.
+
+## Two ways a paste can fail
+
+They need opposite advice, so they are separate exception types:
+
+| Failure | What is true | What the user is told |
+| --- | --- | --- |
+| the clipboard write failed | the text is nowhere | it was saved to the logs folder |
+| the keystroke was refused | the text is on the clipboard | press Ctrl+V |
 
 ## External dependencies
 

@@ -17,9 +17,18 @@ compromised — rotate it at elevenlabs.io rather than only deleting the commit,
 value stays recoverable in git history.
 
 **Your voice.** Recordings are sent to ElevenLabs for transcription; that is what the tool
-does, and it is stated plainly in the README. Locally, only the single most recent
-recording is kept (`logs/last_recording.wav`), and only so a failed upload can be retried.
+does, and it is stated plainly in the README. Locally, at most one recording exists at a
+time (`logs/last_recording.wav`). It is written just before the upload starts and deleted
+as soon as the text has landed in a window — so a crash, a lost connection, or quitting
+mid-upload leaves something to re-send, and a normal successful dictation leaves nothing
+behind.
+
 Transcripts are not written to the log unless `LOG_TRANSCRIPTS=true` is set for debugging.
+There is one exception: if the clipboard itself turns out to be unusable, the transcript is
+written to `logs/last_transcript.txt` rather than discarded. Losing what someone just said
+is the worse outcome, but it does mean that file can hold recent speech — it is overwritten
+each time and excluded from git.
+
 `*.wav` and `logs/` are excluded from git.
 
 ## Scope
