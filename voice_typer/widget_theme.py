@@ -149,9 +149,25 @@ def rounded_outline(
             items.append(canvas.create_line(x0, y, x0 + 1, y, fill=colour))
             items.append(canvas.create_line(x1 - 1, y, x1, y, fill=colour))
 
-    items.append(canvas.create_line(x0 + radius, y0 + 0.5, x1 - radius, y0 + 0.5, fill=colour))
-    items.append(canvas.create_line(x0 + radius, y1 - 0.5, x1 - radius, y1 - 0.5, fill=colour))
+    # The caps start where the first row's own edge pixel already is, not at `radius`.
+    # Starting at `radius` leaves an unpainted notch of `radius - inset - 1` pixels in
+    # every corner — four pixels wide on the card, and visible.
+    cap = x0 + _row_inset(0, height, radius) + 1
+    items.append(canvas.create_line(cap, y0 + 0.5, x1 - (cap - x0), y0 + 0.5, fill=colour))
+    items.append(canvas.create_line(cap, y1 - 0.5, x1 - (cap - x0), y1 - 0.5, fill=colour))
     return items
+
+
+# Ring size and opacity for the halo around the status dot, outermost first. Recolouring
+# has to walk the same ladder, or the outer ring gains an edge instead of fading out.
+GLOW_RINGS = ((3.0, 0.10), (2.1, 0.18), (1.45, 0.30))
+
+
+def recolour_glow_dot(canvas: tk.Canvas, items: list[int], colour: Colour, behind: Colour) -> None:
+    """Repaint a dot built by `glow_dot`, keeping the halo graded."""
+    for item, (_step, alpha) in zip(items, GLOW_RINGS, strict=False):
+        canvas.itemconfig(item, fill=blend(colour, behind, alpha))
+    canvas.itemconfig(items[-1], fill=colour)
 
 
 def glow_dot(
@@ -159,7 +175,7 @@ def glow_dot(
 ) -> list[int]:
     """A filled circle with a soft halo, faked as rings blended against the card."""
     items: list[int] = []
-    for step, alpha in ((3.0, 0.10), (2.1, 0.18), (1.45, 0.30)):
+    for step, alpha in GLOW_RINGS:
         ring = radius * step
         items.append(
             canvas.create_oval(

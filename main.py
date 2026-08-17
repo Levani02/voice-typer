@@ -168,13 +168,7 @@ def main() -> int:
         app.attach_tray(tray)
         app.set_quit_handler(quit_everything)
 
-        try:
-            app.start()
-        except ValueError as exc:  # an unrecognised hotkey name in config.json
-            logger.error("startup failed: %s", exc)
-            show_dialog(str(exc))
-            return 1
-
+        app.start()
         overlay = OverlayWindow(app, WINDOW_POSITION_PATH)
         threading.Thread(target=tray.run, name="tray", daemon=True).start()
 

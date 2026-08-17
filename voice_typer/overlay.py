@@ -100,14 +100,41 @@ SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
 
-# Colour and words for each thing the app can be doing.
+RED = "#f06868"
+AMBER = "#e9a75f"
+ORANGE = "#ffa53a"
+
+
+@dataclass(frozen=True)
+class Look:
+    """How each surface is coloured in one state.
+
+    One colour per state was the obvious first shape and it was wrong: painting the dot,
+    the timer, all 58 meter bars and the microphone the same red turned the whole card
+    into a warning light the moment recording began. The design keeps the waveform teal
+    while recording and puts the emphasis on the timer instead.
+    """
+
+    words: str
+    dot: str
+    wave: str
+    timer: str
+    mic: str
+
+
 APPEARANCE = {
-    "idle": (theme.ACCENT, "მზადაა"),
-    "recording": ("#ff5a52", "იწერს"),
-    "paused": ("#ffd60a", "პაუზა"),
-    "transcribing": ("#ffa53a", "გარდაქმნა"),
-    "error": ("#f06565", "შეცდომა"),
-    "disabled": (theme.DISABLED_INK, "გამორთულია"),
+    "idle": Look("მზადაა", theme.ACCENT, theme.ACCENT, theme.ACCENT, theme.ACCENT),
+    "recording": Look("იწერს", RED, theme.ACCENT, "#ffffff", RED),
+    "paused": Look("პაუზა", AMBER, AMBER, theme.ACCENT, RED),
+    "transcribing": Look("გარდაქმნა", ORANGE, ORANGE, theme.ACCENT, theme.ACCENT),
+    "error": Look("შეცდომა", "#f06565", "#f06565", "#f06565", theme.ACCENT),
+    "disabled": Look(
+        "გამორთულია",
+        theme.DISABLED_INK,
+        theme.DISABLED_INK,
+        theme.DISABLED_INK,
+        theme.DISABLED_INK,
+    ),
 }
 
 
@@ -168,14 +195,28 @@ def display_scale() -> float:
     return max(1.0, dpi / STANDARD_DPI) if dpi else 1.0
 
 
+def _toplevel_handle(window: tk.Misc) -> int:
+    """The window Windows actually manages, not Tk's inner child.
+
+    `winfo_id()` returns a WS_CHILD window. WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW are
+    top-level styles and do nothing on a child, so setting them there looked correct and
+    achieved nothing: every click on the card still took the foreground, which is why the
+    focus had to be handed back afterwards. `wm_frame()` is the real one.
+    """
+    try:
+        return int(window.wm_frame(), 16)
+    except Exception:
+        return window.winfo_id()
+
+
 def _make_non_activating(window: tk.Misc) -> None:
-    """Stop the window from becoming the foreground window, and show it.
+    """Stop the window from becoming the foreground window.
 
     Windows caches a window's frame, so the style change only takes effect once
     SetWindowPos is told the frame changed — and the same call puts the window on top.
     """
     try:
-        handle = window.winfo_id()
+        handle = _toplevel_handle(window)
         user32 = ctypes.windll.user32
         get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
         set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
@@ -212,6 +253,8 @@ class OverlayWindow:
         self._buttons: dict[str, Button] = {}
         self._bars: list[int] = []
         self._levels = [0.0] * BAR_COUNT
+        self._meter_settled = False
+        self._meter_colour = ""
         self._scale = display_scale()
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
@@ -259,6 +302,7 @@ class OverlayWindow:
         with contextlib.suppress(tk.TclError):
             self._root.attributes("-transparentcolor", theme.TRANSPARENT_KEY)
         x, y = self._restore_position()
+        self._saved_position = (x, y)
         self._root.geometry(f"{self._s(WINDOW_WIDTH)}x{self._s(WINDOW_HEIGHT)}+{x}+{y}")
         self._root.protocol("WM_DELETE_WINDOW", lambda: self._safely(self._controller.quit))
 
@@ -402,34 +446,57 @@ class OverlayWindow:
 
     def _paint_record_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._s(34)
+        icon_x = box[0] + self._s(30)
         self._record_icon = self._draw_microphone(icon_x, centre_y, theme.ACCENT)
         self._record_label = self._canvas.create_text(
-            icon_x + self._s(20),
+            icon_x + self._s(15),
             centre_y,
             text="ჩაწერა",
             anchor="w",
             fill=theme.TEXT_BRIGHT,
             font=self._font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
+        self._centre_in(box, [*self._record_icon, self._record_label])
+
+    def _centre_in(self, box: tuple[int, int, int, int], items: list[int]) -> None:
+        """Slide a button's icon and label so the pair sits centred in it.
+
+        Measured rather than computed: the label's width depends on the font Windows
+        picked for Georgian, and it changes when the label does. Doing this after every
+        text change is also what stops the group jumping sideways between states.
+        """
+        bounds = self._canvas.bbox(*items)
+        if bounds is None:
+            return
+        wanted = (box[0] + box[2]) / 2
+        current = (bounds[0] + bounds[2]) / 2
+        shift = round(wanted - current)
+        if shift:
+            for item in items:
+                self._canvas.move(item, shift, 0)
 
     def _draw_microphone(self, x: float, y: float, colour: str) -> list[int]:
-        """A microphone: capsule body, the cradle under it, and the stem."""
-        stroke = max(1, self._s(1.6))
+        """A microphone: capsule body, the cradle under it, and the stem.
+
+        Sized against the button rather than copied from the design's own pixels — the
+        card here is 58% of the design's width, so the design's 20px glyph would read as
+        twice the weight beside a label that did scale down.
+        """
+        stroke = max(1, self._s(1.4))
         return [
             self._canvas.create_oval(
-                x - self._s(3),
-                y - self._s(8),
-                x + self._s(3),
-                y + self._s(1),
+                x - self._s(2.4),
+                y - self._s(6),
+                x + self._s(2.4),
+                y + self._s(0.5),
                 outline=colour,
                 width=stroke,
             ),
             self._canvas.create_arc(
-                x - self._s(6),
-                y - self._s(5),
-                x + self._s(6),
-                y + self._s(6),
+                x - self._s(4.6),
+                y - self._s(4),
+                x + self._s(4.6),
+                y + self._s(4.4),
                 start=200,
                 extent=140,
                 style="arc",
@@ -437,37 +504,38 @@ class OverlayWindow:
                 width=stroke,
             ),
             self._canvas.create_line(
-                x, y + self._s(6), x, y + self._s(9), fill=colour, width=stroke
+                x, y + self._s(4.4), x, y + self._s(6.6), fill=colour, width=stroke
             ),
         ]
 
     def _paint_pause_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._s(32)
+        icon_x = box[0] + self._s(30)
         self._pause_bars = [
             self._canvas.create_rectangle(
                 icon_x + self._s(offset),
-                centre_y - self._s(7),
-                icon_x + self._s(offset + 3),
-                centre_y + self._s(7),
+                centre_y - self._s(5.5),
+                icon_x + self._s(offset + 2.4),
+                centre_y + self._s(5.5),
                 fill=theme.TEXT_MUTED,
                 width=0,
             )
-            for offset in (0, 6)
+            for offset in (0, 4.8)
         ]
         self._pause_label = self._canvas.create_text(
-            icon_x + self._s(20),
+            icon_x + self._s(15),
             centre_y,
             text="პაუზა",
             anchor="w",
             fill=theme.TEXT_BRIGHT,
             font=self._font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
+        self._centre_in(box, [*self._pause_bars, self._pause_label])
 
     def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        arm = self._s(6)
-        stroke = max(1, self._s(2))
+        arm = self._s(4)
+        stroke = max(1, self._s(1.6))
         self._cancel_ink = [
             self._canvas.create_line(x - arm, y - arm, x + arm, y + arm, fill=colour, width=stroke),
             self._canvas.create_line(x + arm, y - arm, x - arm, y + arm, fill=colour, width=stroke),
@@ -479,9 +547,9 @@ class OverlayWindow:
         Tk measures arc angles anticlockwise from three o'clock, so a gap centred on
         twelve o'clock means starting past it and sweeping the rest of the way round.
         """
-        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._s(1)
-        ring = self._s(8)
-        stroke = max(1, self._s(2))
+        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._s(0.5)
+        ring = self._s(5.2)
+        stroke = max(1, self._s(1.6))
         self._canvas.create_arc(
             x - ring,
             y - ring,
@@ -493,7 +561,9 @@ class OverlayWindow:
             outline=colour,
             width=stroke,
         )
-        self._canvas.create_line(x, y - self._s(11), x, y - self._s(2), fill=colour, width=stroke)
+        self._canvas.create_line(
+            x, y - self._s(7.4), x, y - self._s(1.4), fill=colour, width=stroke
+        )
 
     def _paint_footer(self) -> None:
         left, right = self._inner_edges(bleed=4)
@@ -611,10 +681,16 @@ class OverlayWindow:
             label="გამორთვა", command=lambda: self._safely(self._controller.quit)
         )
 
-    def _show_menu(self, event: tk.Event) -> None:
+    def _sync_menu(self) -> None:
+        """Bring the menu's live entries up to date. Kept apart from showing it because
+        `tk_popup` enters Windows' own modal loop and does not return until the menu is
+        dismissed — which nothing can do in a test."""
         listening = self._controller.ui_state() != "disabled"
         self._menu.entryconfig(0, label=self._controller.usage_text())
         self._menu.entryconfig(2, label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"))
+
+    def _show_menu(self, event: tk.Event) -> None:
+        self._sync_menu()
         try:
             self._menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -622,15 +698,31 @@ class OverlayWindow:
 
     # ------------------------------------------------------------------------ position
 
+    def _desktop_bounds(self) -> tuple[int, int, int, int]:
+        """The whole desktop, not just the primary screen.
+
+        `winfo_screenwidth` reports only the primary display, so a window the user had
+        parked on a second monitor was always judged off-screen and dragged back.
+        """
+        try:
+            user32 = ctypes.windll.user32
+            left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+            top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+            width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+            height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+            if width and height:
+                return left, top, left + width, top + height
+        except Exception as exc:
+            logger.warning("could not measure the desktop, using the primary screen: %s", exc)
+        return 0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight()
+
     def _restore_position(self) -> tuple[int, int]:
         """Put the window back where the user left it, if that is still on screen."""
-        screen_width = self._root.winfo_screenwidth()
-        screen_height = self._root.winfo_screenheight()
         width, height = self._s(WINDOW_WIDTH), self._s(WINDOW_HEIGHT)
         margin = self._s(EDGE_MARGIN)
         default = (
-            screen_width - width - margin,
-            screen_height - height - self._s(TASKBAR_ALLOWANCE),
+            self._root.winfo_screenwidth() - width - margin,
+            self._root.winfo_screenheight() - height - self._s(TASKBAR_ALLOWANCE),
         )
         try:
             saved = json.loads(self._position_path.read_text(encoding="utf-8"))
@@ -638,15 +730,23 @@ class OverlayWindow:
         except (OSError, ValueError, KeyError, TypeError):
             return default
 
-        on_screen_x = -width + margin < x < screen_width - margin
-        on_screen_y = -margin < y < screen_height - margin
+        # Enough of the card must remain reachable to grab and drag it back.
+        left, top, right, bottom = self._desktop_bounds()
+        on_screen_x = left - width + margin < x < right - margin
+        on_screen_y = top - margin < y < bottom - margin
         return (x, y) if on_screen_x and on_screen_y else default
 
     def _save_position(self) -> None:
+        """Only when it actually moved — a plain click used to rewrite the file."""
+        position = (self._root.winfo_x(), self._root.winfo_y())
+        if position == self._saved_position:
+            return
         try:
             self._position_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"x": self._root.winfo_x(), "y": self._root.winfo_y()}
-            self._position_path.write_text(json.dumps(payload), encoding="utf-8")
+            self._position_path.write_text(
+                json.dumps({"x": position[0], "y": position[1]}), encoding="utf-8"
+            )
+            self._saved_position = position
         except OSError as exc:
             logger.warning("could not remember the window position: %s", exc)
 
@@ -667,28 +767,34 @@ class OverlayWindow:
 
     def _update(self) -> None:
         state = self._controller.ui_state()
-        colour, words = APPEARANCE.get(state, APPEARANCE["idle"])
+        look = APPEARANCE.get(state, APPEARANCE["idle"])
 
-        for item in self._dot_items[:-1]:
-            self._canvas.itemconfig(item, fill=theme.blend(colour, theme.CARD_TOP, 0.2))
-        self._canvas.itemconfig(self._dot_items[-1], fill=colour)
-        self._canvas.itemconfig(self._status_text, text=words)
+        theme.recolour_glow_dot(self._canvas, self._dot_items, look.dot, theme.CARD_TOP)
+        self._canvas.itemconfig(self._status_text, text=look.words)
         self._canvas.itemconfig(
             self._timer_text,
             text=_format_elapsed(self._controller.ui_elapsed_seconds()),
-            fill=colour,
+            fill=look.timer,
         )
         self._canvas.itemconfig(self._badge_text, text=self._controller.ui_hotkey_label())
         self._canvas.itemconfig(self._device_text, text=self._controller.ui_device_label())
 
-        self._update_meter(state, colour)
-        self._update_buttons(state)
+        self._update_meter(state, look.wave)
+        self._update_buttons(state, look)
 
     def _update_meter(self, state: str, colour: str) -> None:
         """Scroll the level history leftwards, newest at the right — a recorder's trace."""
         level = self._controller.ui_level() if state == "recording" else 0.0
         level = 0.0 if level != level else min(1.0, max(0.0, level))  # NaN reads as 0
         self._levels = [*self._levels[1:], level]
+
+        # Fourteen times a second, redrawing 58 rectangles that are all already flat is
+        # most of what this window costs while it sits there doing nothing.
+        settled = not any(self._levels)
+        if settled and self._meter_settled and colour == self._meter_colour:
+            return
+        self._meter_settled = settled
+        self._meter_colour = colour
 
         middle = self._s(METER_MIDDLE)
         tallest = self._s(METER_HEIGHT) - self._s(2)
@@ -701,28 +807,43 @@ class OverlayWindow:
             self._canvas.coords(bar, x0, middle - height / 2, x1, middle + height / 2)
             self._canvas.itemconfig(bar, fill=colour if height > floor else faded)
 
-    def _update_buttons(self, state: str) -> None:
+    def _update_buttons(self, state: str, look: Look) -> None:
         busy = state in ("recording", "paused")
-
-        self._canvas.itemconfig(self._record_label, text="გაჩერება" if busy else "ჩაწერა")
-        ink = APPEARANCE[state][0] if busy else theme.ACCENT
-        for index, item in enumerate(self._record_icon):
-            # The oval and the arc take `outline`; the stem is a line and takes `fill`.
-            option = "outline" if index < 2 else "fill"
-            self._canvas.itemconfig(item, **{option: ink})
-        self._canvas.itemconfig(
-            self._pause_label, text="გაგრძელება" if state == "paused" else "პაუზა"
-        )
 
         self._set_enabled("record", state not in ("transcribing", "disabled"))
         self._set_enabled("pause", busy)
         self._set_enabled("cancel", busy)
+
+        self._set_label(self._record_label, "გაჩერება" if busy else "ჩაწერა", "record")
+        self._set_label(self._pause_label, "გაგრძელება" if state == "paused" else "პაუზა", "pause")
+
+        # A bright cyan microphone beside a greyed-out label reads as a live button.
+        ink = look.mic if self._buttons["record"].enabled else theme.DISABLED_INK
+        for index, item in enumerate(self._record_icon):
+            # The oval and the arc take `outline`; the stem is a line and takes `fill`.
+            option = "outline" if index < 2 else "fill"
+            self._canvas.itemconfig(item, **{option: ink})
+
+    def _set_label(self, item: int, text: str, button: str) -> None:
+        """Change a button's caption and re-centre its contents around the new width."""
+        if self._canvas.itemcget(item, "text") == text:
+            return
+        self._canvas.itemconfig(item, text=text)
+        group = self._record_icon if button == "record" else self._pause_bars
+        self._centre_in(self._buttons[button].box, [*group, item])
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
         button = self._buttons[name]
         if button.enabled == enabled:
             return
         button.enabled = enabled
+
+        if not enabled and button.hovered:
+            # Otherwise a button that switches off under the pointer keeps its lit
+            # gradient and its hand cursor, and the next click there drags the window.
+            button.hovered = False
+            theme.recolour_gradient(self._canvas, button.fill_items, button.top, button.bottom)
+            self._canvas.config(cursor="")
 
         if name == "record":
             self._canvas.itemconfig(

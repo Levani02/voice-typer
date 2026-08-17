@@ -108,7 +108,7 @@ class App:
         self._claimed: set[Path] = set()  # files a live job is responsible for
         self._take_counter = 0
         self._has_shut_down = False
-        self._enabled = True  # the power button in the window turns the hotkey off
+        self._enabled = True  # the window's menu can switch hotkey listening off
         self._showing_error = False
         self._quit_handler: Callable[[], None] | None = None
         self._target_window = 0  # where the user was typing before touching this app
@@ -276,7 +276,7 @@ class App:
         self._cancel_recording()
 
     def toggle_enabled(self) -> None:
-        """The power button: stop listening for the hotkey entirely, or start again."""
+        """The window's "F9-ის მოსმენა" menu item: stop listening entirely, or resume."""
         if self._enabled:
             self._enabled = False
             self._cancel_recording()

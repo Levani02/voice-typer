@@ -123,6 +123,22 @@ def _validate_ranges(values: dict[str, object]) -> None:
         raise ConfigError("config.json: 'input_device' must be null, a number, or a device name")
 
     _validate_keyterms(values["keyterms"])
+    _validate_hotkey(str(values["hotkey"]))
+
+
+def _validate_hotkey(name: str) -> None:
+    """Reject an unknown key name here rather than when the listener starts.
+
+    `main.py` used to catch this from `app.start()`, but the listener is built in
+    `App.__init__` — thirteen lines earlier — so the friendly message was unreachable and
+    the user got a bare crash dialog instead.
+    """
+    from voice_typer.hotkey import parse_key  # local: keeps pynput off the import path
+
+    try:
+        parse_key(name)
+    except ValueError as exc:
+        raise ConfigError(f"config.json: {exc}") from exc
 
 
 def _validate_keyterms(keyterms: object) -> None:

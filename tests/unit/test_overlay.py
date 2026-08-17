@@ -21,7 +21,7 @@ from voice_typer import widget_theme as theme
 # Importing the overlay first is deliberate: it points Tcl at the base Python install,
 # without which Tk cannot start from inside the virtual environment at all — and this
 # whole file would quietly skip, which is worse than failing.
-from voice_typer.overlay import APPEARANCE, BAR_COUNT, WINDOW_WIDTH, OverlayWindow
+from voice_typer.overlay import APPEARANCE, BAR_COUNT, WINDOW_WIDTH, OverlayWindow, tk
 
 
 class StubController:
@@ -96,7 +96,10 @@ def shared_window(tmp_path_factory):
     path = tmp_path_factory.mktemp("overlay") / "window.json"
     try:
         overlay = OverlayWindow(controller, path)
-    except Exception as exc:  # no desktop session, or Tcl unavailable
+    except tk.TclError as exc:
+        # Only a missing display is a reason to skip. A wider `except Exception` here
+        # turned every real crash in the constructor — which paints the entire card —
+        # into "no desktop session", and the suite went green on a broken window.
         pytest.skip(f"no desktop session available: {exc}")
 
     yield overlay, controller, path
@@ -142,8 +145,7 @@ def test_every_state_paints_without_raising(window, state):
     overlay._update()
     overlay._update()  # twice, so the enable/disable transitions run too
 
-    _colour, words = APPEARANCE[state]
-    assert overlay._canvas.itemcget(overlay._status_text, "text") == words
+    assert overlay._canvas.itemcget(overlay._status_text, "text") == APPEARANCE[state].words
 
 
 def test_the_timer_is_shown_as_minutes_and_seconds(window):
@@ -282,12 +284,21 @@ def test_hovering_lights_the_button_and_leaving_puts_it_back(window):
 
 
 def test_the_menu_shows_the_running_cost_and_whether_the_hotkey_is_live(window):
+    """`_sync_menu`, never `_show_menu`: posting the menu enters Windows' own modal loop,
+    which cannot return without a human to dismiss it — it hangs the whole suite."""
     overlay, controller, _ = window
-    overlay._show_menu(FakeEvent(x_root=-4000, y_root=-4000))  # off-screen, then dismissed
-    overlay._menu.unpost()
+    overlay._sync_menu()
 
     assert overlay._menu.entrycget(0, "label") == controller.usage_text()
     assert overlay._menu.entrycget(2, "label").startswith("✓")
+
+
+def test_the_menu_says_when_the_hotkey_is_switched_off(window):
+    overlay, controller, _ = window
+    controller.state = "disabled"
+    overlay._sync_menu()
+
+    assert not overlay._menu.entrycget(2, "label").startswith("✓")
 
 
 def test_closing_is_safe_to_ask_for_from_another_thread(window):
@@ -298,6 +309,90 @@ def test_closing_is_safe_to_ask_for_from_another_thread(window):
         assert overlay._root.winfo_exists()  # the flag alone destroys nothing
     finally:
         overlay._closing = False
+
+
+def test_the_waveform_stays_calm_while_the_dot_goes_red(window):
+    """One colour for every surface turned the whole card into a warning light."""
+    recording = APPEARANCE["recording"]
+    assert recording.dot != theme.ACCENT
+    assert recording.wave == theme.ACCENT
+    assert recording.timer != recording.dot
+
+
+def test_the_microphone_greys_out_with_its_own_label(window):
+    """A bright cyan mic beside a greyed-out label reads as a live button."""
+    overlay, controller, _ = window
+    controller.state = "transcribing"
+    overlay._update()
+
+    body = overlay._record_icon[0]
+    assert overlay._canvas.itemcget(body, "outline") == theme.DISABLED_INK
+    assert overlay._canvas.itemcget(overlay._record_label, "fill") == theme.DISABLED_INK
+
+
+def test_a_button_disabled_under_the_pointer_stops_looking_clickable(window):
+    """Otherwise it keeps its lit gradient, and the next click there drags the window."""
+    overlay, controller, _ = window
+    controller.state = "recording"
+    overlay._update()
+    overlay._set_hover("cancel")
+    lit = overlay._canvas.itemcget(overlay._buttons["cancel"].fill_items[0], "fill")
+
+    controller.state = "idle"
+    overlay._update()
+
+    assert not overlay._buttons["cancel"].hovered
+    assert overlay._canvas.itemcget(overlay._buttons["cancel"].fill_items[0], "fill") != lit
+
+
+def test_the_button_contents_stay_centred_when_the_label_changes(window):
+    """The group used to jump sideways by 8 pixels between "ჩაწერა" and "გაჩერება"."""
+    overlay, controller, _ = window
+    box = overlay._buttons["record"].box
+
+    def offset():
+        bounds = overlay._canvas.bbox(*overlay._record_icon, overlay._record_label)
+        return abs((bounds[0] + bounds[2]) / 2 - (box[0] + box[2]) / 2)
+
+    idle_offset = offset()
+    controller.state = "recording"
+    overlay._update()
+
+    assert idle_offset <= 2
+    assert offset() <= 2
+
+
+def test_a_plain_click_does_not_rewrite_the_saved_position(window):
+    overlay, _, path = window
+    overlay._on_press(FakeEvent(x=10, y=10, x_root=500, y_root=500))
+    overlay._on_release(FakeEvent(x=10, y=10))
+    before = path.read_text(encoding="utf-8") if path.exists() else None
+
+    for _ in range(3):
+        overlay._on_press(FakeEvent(x=10, y=10, x_root=500, y_root=500))
+        overlay._on_release(FakeEvent(x=10, y=10))
+
+    after = path.read_text(encoding="utf-8") if path.exists() else None
+    assert before == after
+
+
+def test_a_second_monitor_position_is_kept(window, monkeypatch):
+    """winfo_screenwidth only measures the primary display, so a window parked on another
+    screen was always dragged back."""
+    overlay, _, path = window
+    monkeypatch.setattr(overlay, "_desktop_bounds", lambda: (-1920, 0, 1920, 1080))
+    path.write_text(json.dumps({"x": -1500, "y": 400}), encoding="utf-8")
+
+    assert overlay._restore_position() == (-1500, 400)
+
+
+def test_the_status_dot_keeps_a_graded_halo(window):
+    """Recolouring the rings with one alpha gives the glow a hard edge."""
+    overlay, _, _ = window
+    overlay._update()
+
+    rings = [overlay._canvas.itemcget(item, "fill") for item in overlay._dot_items]
+    assert len(set(rings)) == len(rings)  # every ring a different shade
 
 
 def test_colours_blend_and_mix_within_range():
