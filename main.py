@@ -35,6 +35,7 @@ LOG_BACKUP_COUNT = 3
 MB_ICONERROR = 0x10
 MB_ICONWARNING = 0x30
 SW_HIDE = 0
+DPI_PER_MONITOR_AWARE_V2 = -4
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,37 @@ def setup_logging() -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     logging.getLogger("PIL").setLevel(logging.WARNING)  # it logs every image plugin it finds
+
+
+def make_dpi_aware() -> None:
+    """Draw at the screen's real resolution instead of being stretched to it.
+
+    Without this, Windows renders the window at 96 DPI and then scales the finished
+    bitmap up — on a display at 125% that means every line and every letter is blown up
+    by a quarter and resampled, which is exactly the soft, chunky look it produces.
+    Declaring awareness hands the app the real pixels; `overlay.py` then multiplies its
+    own measurements so the window stays the same physical size, only sharper.
+
+    Must run before any window exists, which is why it is here and not in the overlay.
+    """
+    user32 = ctypes.windll.user32
+    try:  # Windows 10 1703 and later — per-monitor, survives being dragged between screens
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(DPI_PER_MONITOR_AWARE_V2)):
+            return
+    except Exception:
+        pass
+
+    try:  # Windows 8.1
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+
+    try:  # Windows Vista and later — system-wide scaling only
+        user32.SetProcessDPIAware()
+    except Exception as exc:
+        logger.warning("could not become DPI aware, the window may look soft: %s", exc)
 
 
 def hide_own_console() -> None:
@@ -104,6 +136,7 @@ def build_tray(app: App, quit_everything) -> TrayIcon:
 def main() -> int:
     setup_logging()
     hide_own_console()
+    make_dpi_aware()
 
     lock = SingleInstance()
     if not lock.acquire():

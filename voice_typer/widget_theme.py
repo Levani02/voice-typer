@@ -51,13 +51,18 @@ POWER_INK: Colour = "#f08787"
 DISABLED_INK: Colour = "#4e565a"
 
 # Georgian needs a font that actually has the Mkhedruli block. Segoe UI has carried it
-# since Windows 10 1903; the rest are fallbacks for other machines.
-UI_FONT = ("Segoe UI", 11)
-UI_FONT_MEDIUM = ("Segoe UI", 12)
-STATUS_FONT = ("Segoe UI", 13)
-MONO_FONT = ("Consolas", 13)
-BADGE_FONT = ("Consolas", 9)
-FOOTER_FONT = ("Consolas", 8)
+# since Windows 10 1903.
+UI_FAMILY = "Segoe UI"
+MONO_FAMILY = "Consolas"
+
+# Heights in pixels at 100% display scaling. `overlay.py` multiplies these by the real
+# scaling factor and passes them to Tk as negative sizes, which means pixels rather than
+# points — the only way to keep the design's proportions exact on any display.
+STATUS_PX = 17
+MONO_PX = 17
+BUTTON_PX = 15
+BADGE_PX = 11
+FOOTER_PX = 11
 
 
 def to_rgb(colour: Colour) -> Rgb:

@@ -1,0 +1,14 @@
+- generic [ref=e8]:
+  - generic [ref=e10]:
+    - generic [ref=e14]: მზადაა
+    - generic [ref=e15]: 0:00
+    - generic [ref=e16]: F9
+    - button "აპლიკაციის დახურვა" [ref=e17] [cursor=pointer]
+  - generic [ref=e79]:
+    - button "ჩაწერა" [ref=e80] [cursor=pointer]
+    - button "პაუზა" [disabled] [ref=e86] [cursor=pointer]
+    - button "გაუქმება" [ref=e91] [cursor=pointer]
+    - button "გამორთვა" [ref=e94] [cursor=pointer]
+  - generic [ref=e97]:
+    - generic [ref=e98]: F9 ჩაწერა · SPACE პაუზა · ESC გაუქმება
+    - generic [ref=e99]: "მიკროფონი: ჩაშენებული"
