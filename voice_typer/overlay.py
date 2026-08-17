@@ -245,7 +245,11 @@ class OverlayWindow:
     """The floating recorder. `run` blocks and owns the main thread."""
 
     def __init__(
-        self, controller: Controller, position_path: Path, window_scale: float = 1.0
+        self,
+        controller: Controller,
+        position_path: Path,
+        window_scale: float = 1.0,
+        content_scale: float = 1.0,
     ) -> None:
         self._controller = controller
         self._position_path = position_path
@@ -261,6 +265,11 @@ class OverlayWindow:
         # through the same multiplier, so a smaller window is drawn small rather than
         # drawn large and shrunk — which is what would make it soft again.
         self._scale = display_scale() * window_scale
+        # Text and icons carry a second factor. Halving the card also halved the writing,
+        # which is legible but harder to read at a glance than it needs to be — and a
+        # status display is meant to be read at a glance. Positions still come from
+        # `_s`, so the layout does not move when the lettering grows.
+        self._content_scale = self._scale * content_scale
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
         # shown again can come back unmapped, which is exactly as useful as no window.
@@ -284,12 +293,20 @@ class OverlayWindow:
     # ------------------------------------------------------------------------ measuring
 
     def _s(self, value: float) -> int:
-        """A design measurement in real screen pixels."""
+        """A design measurement in real screen pixels. Use for anything positional."""
         return round(value * self._scale)
+
+    def _c(self, value: float) -> int:
+        """The same, for the size of a glyph or the box around a piece of text.
+
+        Separate from `_s` so lettering and icons can be readable at a card size that
+        would otherwise make them squint-small, without the layout shifting around them.
+        """
+        return round(value * self._content_scale)
 
     def _font(self, family: str, design_px: int, weight: str = "normal") -> tuple:
         """A font sized in pixels — negative means pixels to Tk, which points would not."""
-        return (family, -self._s(design_px), weight)
+        return (family, -max(1, self._c(design_px)), weight)
 
     # ------------------------------------------------------------------------ the window
 
@@ -341,10 +358,10 @@ class OverlayWindow:
         y = self._s(STATUS_BASELINE)
 
         self._dot_items = theme.glow_dot(
-            self._canvas, left + self._s(5), y, self._s(5), theme.ACCENT, theme.CARD_TOP
+            self._canvas, left + self._c(5), y, self._c(5), theme.ACCENT, theme.CARD_TOP
         )
         self._status_text = self._canvas.create_text(
-            left + self._s(22),
+            left + self._c(22),
             y,
             text="",
             anchor="w",
@@ -352,9 +369,11 @@ class OverlayWindow:
             font=self._font(theme.UI_FAMILY, theme.STATUS_PX),
         )
 
-        badge = (right - self._s(34), y - self._s(10), right, y + self._s(10))
-        theme.rounded_gradient(self._canvas, badge, self._s(5), "#26292c", "#1a1d20")
-        theme.rounded_outline(self._canvas, badge, self._s(5), "#3a3e43")
+        # The badge is sized with the lettering inside it rather than with the card, or
+        # a larger "F9" would push against its own border.
+        badge = (right - self._c(34), y - self._c(10), right, y + self._c(10))
+        theme.rounded_gradient(self._canvas, badge, self._c(5), "#26292c", "#1a1d20")
+        theme.rounded_outline(self._canvas, badge, self._c(5), "#3a3e43")
         self._badge_text = self._canvas.create_text(
             (badge[0] + badge[2]) / 2,
             y,
@@ -363,8 +382,10 @@ class OverlayWindow:
             font=self._font(theme.MONO_FAMILY, theme.BADGE_PX),
         )
 
+        # Measured from the badge, not from the card's edge: the badge is what the timer
+        # would collide with, and it is the thing whose width changes.
         self._timer_text = self._canvas.create_text(
-            right - self._s(46),
+            badge[0] - self._s(12),
             y,
             text="0:00",
             anchor="e",
@@ -454,7 +475,7 @@ class OverlayWindow:
         icon_x = box[0] + self._s(30)
         self._record_icon = self._draw_microphone(icon_x, centre_y, theme.ACCENT)
         self._record_label = self._canvas.create_text(
-            icon_x + self._s(15),
+            icon_x + self._c(15),
             centre_y,
             text="ჩაწერა",
             anchor="w",
@@ -487,21 +508,21 @@ class OverlayWindow:
         card here is 58% of the design's width, so the design's 20px glyph would read as
         twice the weight beside a label that did scale down.
         """
-        stroke = max(1, self._s(1.4))
+        stroke = max(1, self._c(1.4))
         return [
             self._canvas.create_oval(
-                x - self._s(2.4),
-                y - self._s(6),
-                x + self._s(2.4),
-                y + self._s(0.5),
+                x - self._c(2.4),
+                y - self._c(6),
+                x + self._c(2.4),
+                y + self._c(0.5),
                 outline=colour,
                 width=stroke,
             ),
             self._canvas.create_arc(
-                x - self._s(4.6),
-                y - self._s(4),
-                x + self._s(4.6),
-                y + self._s(4.4),
+                x - self._c(4.6),
+                y - self._c(4),
+                x + self._c(4.6),
+                y + self._c(4.4),
                 start=200,
                 extent=140,
                 style="arc",
@@ -509,7 +530,7 @@ class OverlayWindow:
                 width=stroke,
             ),
             self._canvas.create_line(
-                x, y + self._s(4.4), x, y + self._s(6.6), fill=colour, width=stroke
+                x, y + self._c(4.4), x, y + self._c(6.6), fill=colour, width=stroke
             ),
         ]
 
@@ -518,17 +539,17 @@ class OverlayWindow:
         icon_x = box[0] + self._s(30)
         self._pause_bars = [
             self._canvas.create_rectangle(
-                icon_x + self._s(offset),
-                centre_y - self._s(5.5),
-                icon_x + self._s(offset + 2.4),
-                centre_y + self._s(5.5),
+                icon_x + self._c(offset),
+                centre_y - self._c(5.5),
+                icon_x + self._c(offset + 2.4),
+                centre_y + self._c(5.5),
                 fill=theme.TEXT_MUTED,
                 width=0,
             )
             for offset in (0, 4.8)
         ]
         self._pause_label = self._canvas.create_text(
-            icon_x + self._s(15),
+            icon_x + self._c(15),
             centre_y,
             text="პაუზა",
             anchor="w",
@@ -539,8 +560,8 @@ class OverlayWindow:
 
     def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        arm = self._s(4)
-        stroke = max(1, self._s(1.6))
+        arm = self._c(4)
+        stroke = max(1, self._c(1.6))
         self._cancel_ink = [
             self._canvas.create_line(x - arm, y - arm, x + arm, y + arm, fill=colour, width=stroke),
             self._canvas.create_line(x + arm, y - arm, x - arm, y + arm, fill=colour, width=stroke),
@@ -553,8 +574,8 @@ class OverlayWindow:
         twelve o'clock means starting past it and sweeping the rest of the way round.
         """
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._s(0.5)
-        ring = self._s(5.2)
-        stroke = max(1, self._s(1.6))
+        ring = self._c(5.2)
+        stroke = max(1, self._c(1.6))
         self._canvas.create_arc(
             x - ring,
             y - ring,
@@ -567,7 +588,7 @@ class OverlayWindow:
             width=stroke,
         )
         self._canvas.create_line(
-            x, y - self._s(7.4), x, y - self._s(1.4), fill=colour, width=stroke
+            x, y - self._c(7.4), x, y - self._c(1.4), fill=colour, width=stroke
         )
 
     def _paint_footer(self) -> None:

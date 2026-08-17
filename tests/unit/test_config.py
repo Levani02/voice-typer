@@ -61,6 +61,8 @@ def test_malformed_json_names_the_line(tmp_path):
         ("window_scale", 0),  # a window with no size at all
         ("window_scale", 0.1),  # too small for the Georgian labels to be read
         ("window_scale", 5),  # larger than most screens
+        ("content_scale", 0.2),  # lettering smaller than the card it sits in can show
+        ("content_scale", 3),  # labels would outgrow their buttons
     ],
 )
 def test_out_of_range_numbers_are_rejected(tmp_path, setting, value):
@@ -71,6 +73,11 @@ def test_out_of_range_numbers_are_rejected(tmp_path, setting, value):
 def test_window_scale_is_read_and_defaults_to_full_size(tmp_path):
     assert load_config(write_config(tmp_path, {"window_scale": 0.5})).window_scale == 0.5
     assert load_config(write_config(tmp_path, {})).window_scale == 1.0
+
+
+def test_content_scale_is_read_and_defaults_to_matching_the_window(tmp_path):
+    assert load_config(write_config(tmp_path, {"content_scale": 1.3})).content_scale == 1.3
+    assert load_config(write_config(tmp_path, {})).content_scale == 1.0
 
 
 def test_text_where_a_number_belongs_is_rejected(tmp_path):

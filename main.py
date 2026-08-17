@@ -169,7 +169,9 @@ def main() -> int:
         app.set_quit_handler(quit_everything)
 
         app.start()
-        overlay = OverlayWindow(app, WINDOW_POSITION_PATH, config.window_scale)
+        overlay = OverlayWindow(
+            app, WINDOW_POSITION_PATH, config.window_scale, config.content_scale
+        )
         threading.Thread(target=tray.run, name="tray", daemon=True).start()
 
         try:

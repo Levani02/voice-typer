@@ -34,6 +34,7 @@ DEFAULTS: dict[str, object] = {
     "keyterms": [],
     "prune_takes_after_days": 7,
     "window_scale": 1.0,
+    "content_scale": 1.0,
 }
 
 # name -> (minimum, maximum), inclusive. Guards against a typo turning into a bill.
@@ -48,6 +49,9 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     # How large the recorder window is drawn, on top of the display's own scaling. Below
     # about a third the Georgian labels stop being legible at any DPI.
     "window_scale": (0.3, 2.0),
+    # Text and icons, on top of `window_scale`. Above about 1.5 the labels outgrow the
+    # buttons they sit in; the card does not grow to meet them.
+    "content_scale": (0.6, 1.5),
 }
 
 # Above this many key terms ElevenLabs bills a 20-second minimum per request, which would
@@ -79,6 +83,7 @@ class Config:
     keyterms: tuple[str, ...]
     prune_takes_after_days: int
     window_scale: float
+    content_scale: float
     log_transcripts: bool
 
 
@@ -198,5 +203,6 @@ def load_config(config_path: Path | None = None) -> Config:
         keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
         prune_takes_after_days=int(values["prune_takes_after_days"]),
         window_scale=float(values["window_scale"]),
+        content_scale=float(values["content_scale"]),
         log_transcripts=os.environ.get("LOG_TRANSCRIPTS", "").strip().lower() == "true",
     )

@@ -41,6 +41,7 @@ def make_config(**overrides) -> Config:
         "keyterms": (),
         "prune_takes_after_days": 7,
         "window_scale": 1.0,
+        "content_scale": 1.0,
         "log_transcripts": False,
     }
     return Config(**{**values, **overrides})
