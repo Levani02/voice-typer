@@ -29,7 +29,13 @@ from pathlib import Path
 
 from voice_typer.config import LOGS_DIR, Config
 from voice_typer.hotkey import Action, HotkeyListener
-from voice_typer.injector import ClipboardUnavailableError, PasteFailedError, inject_text
+from voice_typer.injector import (
+    ClipboardUnavailableError,
+    PasteFailedError,
+    foreground_window,
+    inject_text,
+    is_our_window,
+)
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
 from voice_typer.transcriber import Transcriber, Transcript, TranscriptionError, UsageLog
 from voice_typer.tray import TrayIcon, TrayState
@@ -53,6 +59,10 @@ ERROR_DISPLAY_SECONDS = 6.0
 SHUTDOWN_WAIT_SECONDS = 5.0
 
 SECONDS_PER_DAY = 86_400
+
+# How often to note which window the user is working in. One Win32 call, so the cost is
+# nil; often enough that clicking this app's own button cannot outrun it.
+FOCUS_POLL_SECONDS = 0.2
 
 # The window and the tray must never disagree about what is happening, so both are drawn
 # from the single word `ui_state` returns.
@@ -101,6 +111,8 @@ class App:
         self._enabled = True  # the power button in the window turns the hotkey off
         self._showing_error = False
         self._quit_handler: Callable[[], None] | None = None
+        self._target_window = 0  # where the user was typing before touching this app
+        self._watching_focus = threading.Event()
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -108,8 +120,26 @@ class App:
     def start(self) -> None:
         self._prune_old_takes()
         self._take_counter = _highest_take_number(PENDING_DIR)
+        self._start_watching_focus()
         self._hotkey.start()
         logger.info("ready — press %s to dictate", self._config.hotkey)
+
+    def _start_watching_focus(self) -> None:
+        """Keep track of the window the user is actually working in.
+
+        It cannot be read when a recording starts: by then the user may have clicked this
+        app's own record button, which already moved the focus here. So the last window
+        that was not ours is remembered continuously — one cheap call every fifth of a
+        second — and that is where the transcript goes.
+        """
+
+        def watch() -> None:
+            while not self._watching_focus.wait(FOCUS_POLL_SECONDS):
+                handle = foreground_window()
+                if handle and not is_our_window(handle):
+                    self._target_window = handle
+
+        threading.Thread(target=watch, name="focus-watch", daemon=True).start()
 
     def shutdown(self) -> None:
         """Release the keyboard hook, the timers, and the microphone, in that order."""
@@ -120,6 +150,7 @@ class App:
 
         self._cancel_auto_stop()
         self._cancel_error_reset()
+        self._watching_focus.set()
         self._hotkey.stop()
         if self._recorder.is_recording:
             self._recorder.cancel()
@@ -415,6 +446,7 @@ class App:
                 text,
                 restore_clipboard=self._config.restore_clipboard,
                 restore_delay_ms=self._config.clipboard_restore_delay_ms,
+                target_window=self._target_window,
             )
         except PasteFailedError as exc:
             self._report_error(str(exc), "ტექსტი clipboard-შია — დააჭირე Ctrl+V")

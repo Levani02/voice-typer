@@ -148,6 +148,53 @@ def test_the_paste_key_is_addressed_by_virtual_key_not_by_the_letter(clipboard):
     assert key.char is None  # nothing here goes through the layout at all
 
 
+def test_focus_is_handed_back_when_our_own_window_has_it(clipboard, monkeypatch):
+    """Clicking the app's own record button moves focus here; the paste would then land
+    on a window with nowhere to put it. This was the bug the user hit."""
+    restored: list[int] = []
+    monkeypatch.setattr(injector_module, "foreground_window", lambda: 111)
+    monkeypatch.setattr(injector_module, "is_our_window", lambda handle: handle == 111)
+    monkeypatch.setattr(injector_module, "_restore_foreground", restored.append)
+    monkeypatch.setattr(injector_module, "FOCUS_SETTLE_SECONDS", 0)
+
+    inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=FakeKeyboard(), target_window=222)
+
+    assert restored == [222]
+
+
+def test_focus_is_left_alone_when_the_user_is_already_where_they_want_to_be(clipboard, monkeypatch):
+    """Pressing the hotkey never moves focus, so nothing should be touched."""
+    restored: list[int] = []
+    monkeypatch.setattr(injector_module, "foreground_window", lambda: 999)
+    monkeypatch.setattr(injector_module, "is_our_window", lambda _handle: False)
+    monkeypatch.setattr(injector_module, "_restore_foreground", restored.append)
+
+    inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=FakeKeyboard(), target_window=222)
+
+    assert restored == []
+
+
+def test_a_failure_to_hand_focus_back_does_not_stop_the_paste(clipboard, monkeypatch):
+    """Windows can refuse a foreground change. Pasting somewhere beats pasting nowhere."""
+    monkeypatch.setattr(injector_module, "foreground_window", lambda: 111)
+    monkeypatch.setattr(injector_module, "is_our_window", lambda _handle: True)
+    monkeypatch.setattr(
+        injector_module, "_restore_foreground", _raiser(OSError("refused by Windows"))
+    )
+    keyboard = FakeKeyboard()
+
+    inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard, target_window=222)
+
+    assert keyboard.pressed_keys == [injector_module.PASTE_KEY]
+
+
+def _raiser(exc):
+    def fail(*_args, **_kwargs):
+        raise exc
+
+    return fail
+
+
 def test_the_modifier_wait_gives_up_rather_than_blocking_forever(monkeypatch):
     """A keyboard hook can miss a key-release. Waiting for ever would hang the app and
     lose the words; pasting with a modifier held is the lesser problem."""

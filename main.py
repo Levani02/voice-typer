@@ -34,6 +34,7 @@ LOG_MAX_BYTES = 1_000_000
 LOG_BACKUP_COUNT = 3
 MB_ICONERROR = 0x10
 MB_ICONWARNING = 0x30
+SW_HIDE = 0
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,38 @@ def setup_logging() -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     logging.getLogger("PIL").setLevel(logging.WARNING)  # it logs every image plugin it finds
+
+
+def hide_own_console() -> None:
+    """Get rid of the black console window, if this process opened one.
+
+    Double-clicking `main.py` runs it under `python.exe`, which comes with a console —
+    and a dictation tool that leaves a terminal sitting on the desktop is not finished.
+    `pythonw.exe` has no console to begin with, so this does nothing there.
+
+    The check matters: when the app is started from an existing PowerShell, the console
+    belongs to that shell, and hiding it would close the user's own terminal out from
+    under them. Only a console this process owns is hidden.
+    """
+    try:
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        console = kernel32.GetConsoleWindow()
+        if not console:
+            return
+
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(console, ctypes.byref(owner))
+        if owner.value != kernel32.GetCurrentProcessId():
+            return
+
+        user32.ShowWindow(console, SW_HIDE)
+        # Detach from the console as well as hiding it. A hidden console can still be
+        # closed by Windows, and that sends a close event to every process attached to
+        # it — which would take the app down with it, silently.
+        kernel32.FreeConsole()
+    except Exception as exc:
+        logger.warning("could not hide the console window: %s", exc)
 
 
 def show_dialog(message: str, icon: int = MB_ICONERROR) -> None:
@@ -70,6 +103,7 @@ def build_tray(app: App, quit_everything) -> TrayIcon:
 
 def main() -> int:
     setup_logging()
+    hide_own_console()
 
     lock = SingleInstance()
     if not lock.acquire():
