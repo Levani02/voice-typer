@@ -104,10 +104,14 @@ class Controller(Protocol):
     def ui_elapsed_seconds(self) -> float: ...
     def ui_level(self) -> float: ...
     def ui_hotkey_label(self) -> str: ...
+    def usage_text(self) -> str: ...
     def toggle_recording(self) -> None: ...
     def toggle_pause(self) -> None: ...
     def cancel_recording(self) -> None: ...
     def toggle_enabled(self) -> None: ...
+    def retry_last(self) -> None: ...
+    def open_logs(self) -> None: ...
+    def open_settings(self) -> None: ...
     def quit(self) -> None: ...
 
 
@@ -205,8 +209,54 @@ class OverlayWindow:
         self._meter_bar = self._meter.create_rectangle(0, 0, 0, 6, fill=BACKGROUND, width=0)
 
         self._build_buttons(outer)
+        self._build_menu()
         for widget in (outer, top, self._status, self._dot, self._timer):
             self._bind_drag(widget)
+            widget.bind("<Button-3>", self._show_menu)
+
+    def _build_menu(self) -> None:
+        """Right-click menu — everything the hidden tray icon used to offer."""
+        self._menu = tk.Menu(
+            self._root,
+            tearoff=0,
+            bg=BUTTON_BACKGROUND,
+            fg=TEXT,
+            activebackground=BUTTON_ACTIVE,
+            activeforeground=TEXT,
+            borderwidth=0,
+        )
+        self._menu.add_command(label="", state="disabled")  # the usage line, filled in on open
+        self._menu.add_separator()
+        self._menu.add_command(
+            label="F9-ის მოსმენა", command=lambda: self._safely(self._controller.toggle_enabled)
+        )
+        self._menu.add_command(
+            label="ბოლო ჩანაწერის ხელახლა გაგზავნა",
+            command=lambda: self._safely(self._controller.retry_last),
+        )
+        self._menu.add_separator()
+        self._menu.add_command(
+            label="ლოგების საქაღალდე", command=lambda: self._safely(self._controller.open_logs)
+        )
+        self._menu.add_command(
+            label="პარამეტრები (config.json)",
+            command=lambda: self._safely(self._controller.open_settings),
+        )
+        self._menu.add_separator()
+        self._menu.add_command(
+            label="გამორთვა", command=lambda: self._safely(self._controller.quit)
+        )
+
+    def _show_menu(self, event: tk.Event) -> None:
+        listening = (
+            "✓ F9-ის მოსმენა" if self._controller.ui_state() != "disabled" else "F9-ის მოსმენა"
+        )
+        self._menu.entryconfig(0, label=self._controller.usage_text())
+        self._menu.entryconfig(2, label=listening)
+        try:
+            self._menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._menu.grab_release()
 
     def _build_buttons(self, parent: tk.Frame) -> None:
         row = tk.Frame(parent, bg=BACKGROUND)
@@ -217,7 +267,10 @@ class OverlayWindow:
         self._record_button = self._make_button(row, "● ჩაწერა", self._controller.toggle_recording)
         self._pause_button = self._make_button(row, "❚❚ პაუზა", self._controller.toggle_pause)
         self._cancel_button = self._make_button(row, "✕", self._controller.cancel_recording, 6)
-        self._power_button = self._make_button(row, "⏻", self._controller.toggle_enabled, 6)
+        # The power symbol means "turn this off" to everyone, so it closes the app. The
+        # tray menu used to be the only way out, and Windows 11 hides the tray icon —
+        # which left Task Manager as the answer, and that is not an answer.
+        self._quit_button = self._make_button(row, "⏻", self._controller.quit, 6)
 
     def _make_button(
         self, parent: tk.Frame, label: str, command: Callable[[], None], padx: int = 10
@@ -342,7 +395,6 @@ class OverlayWindow:
             state="normal" if busy else "disabled",
         )
         self._cancel_button.config(state="normal" if busy else "disabled")
-        self._power_button.config(fg=DIM_TEXT if state == "disabled" else TEXT)
 
     # ------------------------------------------------------------------------ lifecycle
 
