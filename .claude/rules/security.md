@@ -19,9 +19,10 @@ python -c "import os,dotenv;dotenv.load_dotenv();print('KEY SET:', bool(os.envir
 ## The user's voice is sensitive data
 
 - Recorded audio is speech from the user's own room. Treat it as private.
-- At most one recording exists on disk: `logs/last_recording.wav`. It is written just
-  before an upload and deleted as soon as the text lands in a window, so a successful
-  dictation leaves nothing behind and an interrupted one leaves exactly one file to retry.
+- Each take is written to `logs/pending/take-NNNN.wav` just before its upload and deleted
+  as soon as its own text lands in a window, so a successful dictation leaves nothing
+  behind and only interrupted ones remain. Never make several takes share one file — the
+  later one overwrites the earlier one's safety net.
 - Transcripts are **not** written to the log by default — only their character count.
   `LOG_TRANSCRIPTS=true` is a debugging switch and stays off otherwise.
 - One deliberate exception: when the clipboard itself is unusable, the transcript goes to

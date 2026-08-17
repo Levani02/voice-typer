@@ -71,7 +71,7 @@ the paste fails. That restore lives in a `finally` block.
 | Path | Contents |
 | --- | --- |
 | `logs/voice_typer.log` | rotating log, 1 MB × 3. No API key. No transcript unless `LOG_TRANSCRIPTS=true` |
-| `logs/last_recording.wav` | written before every upload, deleted once the text lands in a window |
+| `logs/pending/take-NNNN.wav` | one file per take, written before its upload and deleted once its text lands |
 | `logs/last_transcript.txt` | only written when the clipboard is unusable, so the words are not lost |
 | `logs/usage.json` | cumulative seconds and estimated cost, shown in the tray menu |
 
@@ -81,15 +81,30 @@ All of them are excluded from git.
 
 Two rules, both of which exist because the alternative is the user saying something twice:
 
-**The audio is on disk before it is uploaded.** Whatever kills the worker — a crash, the
-power going out, Quit clicked while the icon is amber — leaves a file the tray menu can
-re-send. It is deleted only after the text has actually been pasted. Quit also waits up to
-15 seconds for a transcription already in flight, rather than abandoning it.
+**Every take gets its own file, written before its upload.** Whatever kills the worker — a
+crash, the power going out, Quit clicked while the icon is amber — leaves a file the tray
+menu can re-send. Each file is deleted only after *its own* text has been pasted.
 
-**Jobs are serialised, and the icon describes the live one.** If a second dictation is
-finished while the first is still uploading, it queues; when it starts for real it puts the
-icon back to amber. Retry refuses outright while anything is running — clicking it twice
-used to paste the same words twice.
+One shared file would not survive ordinary use: starting a second dictation while the first
+is still uploading is a normal thing to do, and the second take would overwrite the first
+take's safety net, which the first take would then delete on its way out. Hence
+`take-0001.wav`, `take-0002.wav`, numbered on from whatever a previous session left behind.
+
+Retry re-sends the newest file that no running job owns, so it can never duplicate work
+already in flight. Quit waits up to 5 seconds for a transcription in progress — a courtesy,
+not a safety net, since the audio is already on disk.
+
+**Nothing slow runs on the keyboard hook thread.** `_stop_recording` is called from inside
+a global low-level Windows keyboard hook, and every keystroke on the machine queues behind
+it. A 300-second recording is about 9 MB; writing that inline would stall typing
+system-wide, and a slow enough write can make Windows drop the hook entirely — which would
+kill the hotkey until the app restarts. The write happens on the worker instead.
+
+**The icon is computed, never asserted.** Four kinds of thread can change it — the hook,
+two timers, and every worker. Each one calls `_settle_state()`, which looks at the recorder
+and the job count and paints what is actually true. Recording outranks transcribing. A
+worker finishing its job can no longer paint "ready" over a recording the user has since
+started.
 
 ## Two ways a paste can fail
 

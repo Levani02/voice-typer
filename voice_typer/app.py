@@ -1,21 +1,27 @@
 """The state machine that connects the pieces.
 
 IDLE -> RECORDING -> TRANSCRIBING -> IDLE, with ERROR as a display state that falls back
-to IDLE. This is the only module aware of more than one other module.
+to whatever is actually happening. This is the only module aware of more than one other
+module.
 
-Two rules hold everywhere below, because breaking either loses the user's words:
+Three rules hold everywhere below, because breaking any of them loses the user's words:
 
-* A recording is written to disk *before* it is uploaded and deleted only once its text
-  has actually landed in a window. Anything that kills the worker in between — a crash,
-  Quit, the power going out — leaves a file the tray menu can re-send.
-* Transcription jobs are serialised, and only one may be queued behind the running one.
-  The tray always shows the job that is genuinely in flight, never a stale one.
+* **Every take gets its own file.** A recording is written to `logs/pending/` before it is
+  uploaded and deleted only once its own text has landed in a window. Starting a second
+  dictation while the first is still uploading is ordinary use, so one shared file would
+  not do — the second take would overwrite the first take's safety net.
+* **Nothing slow runs on the keyboard hook thread.** `_stop_recording` is called from
+  inside a global low-level Windows keyboard hook; every keystroke on the machine waits
+  behind it. Disk writes and network calls belong on the worker thread.
+* **The tray shows what is true right now**, computed from the recorder and the job count
+  rather than set blindly by whichever thread finished last.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -28,7 +34,9 @@ from voice_typer.tray import TrayIcon, TrayState
 
 logger = logging.getLogger(__name__)
 
-LAST_RECORDING_PATH = LOGS_DIR / "last_recording.wav"
+PENDING_DIR = LOGS_DIR / "pending"
+PENDING_PATTERN = "take-*.wav"
+PENDING_NUMBER = re.compile(r"take-(\d+)\.wav$")
 LAST_TRANSCRIPT_PATH = LOGS_DIR / "last_transcript.txt"
 USAGE_PATH = LOGS_DIR / "usage.json"
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
@@ -37,9 +45,10 @@ CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
 # short enough that the app does not look permanently broken.
 ERROR_DISPLAY_SECONDS = 6.0
 
-# How long Quit waits for a transcription that is already in flight. The recording is on
-# disk either way, so this is about finishing gracefully, not about safety.
-SHUTDOWN_WAIT_SECONDS = 15.0
+# How long Quit waits for a transcription already in flight. Kept short: the audio is on
+# disk either way, so this is only about finishing gracefully — and the wait happens on
+# the thread that draws the tray icon, which would otherwise look frozen.
+SHUTDOWN_WAIT_SECONDS = 5.0
 
 
 class App:
@@ -68,19 +77,28 @@ class App:
         self._tray: TrayIcon | None = None
         self._auto_stop: threading.Timer | None = None
         self._error_reset: threading.Timer | None = None
-        self._transcribing = threading.Lock()  # serialises the workers themselves
-        self._jobs = threading.Condition()  # guards the count below
+        self._transcribing = threading.Lock()  # serialises the uploads themselves
+        self._jobs = threading.Condition()  # guards everything below
         self._pending_jobs = 0
+        self._claimed: set[Path] = set()  # files a live job is responsible for
+        self._take_counter = 0
+        self._has_shut_down = False
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
 
     def start(self) -> None:
+        self._take_counter = _highest_take_number(PENDING_DIR)
         self._hotkey.start()
         logger.info("ready — press %s to dictate", self._config.hotkey)
 
     def shutdown(self) -> None:
         """Release the keyboard hook, the timers, and the microphone, in that order."""
+        with self._jobs:
+            if self._has_shut_down:
+                return  # called from both the tray menu and main()'s finally block
+            self._has_shut_down = True
+
         self._cancel_auto_stop()
         self._cancel_error_reset()
         self._hotkey.stop()
@@ -90,10 +108,7 @@ class App:
         if self.is_busy:
             self._notify("ბოლო ჩანაწერი მუშავდება — ერთი წამი")
             if not self._wait_for_jobs(SHUTDOWN_WAIT_SECONDS):
-                logger.warning(
-                    "quit while a transcription was still running — the recording is kept at %s",
-                    LAST_RECORDING_PATH,
-                )
+                logger.warning("quit with a transcription still running — its audio is kept")
         logger.info("shut down")
 
     # ------------------------------------------------------------------ hotkey handling
@@ -119,6 +134,7 @@ class App:
         self._schedule_auto_stop()
 
     def _stop_recording(self) -> None:
+        """Runs on the keyboard hook thread — hand off quickly and do nothing slow here."""
         self._cancel_auto_stop()
         if not self._recorder.is_recording:
             return
@@ -128,7 +144,7 @@ class App:
             logger.info(
                 "discarded a %.2fs clip — too short to be speech", recording.duration_seconds
             )
-            self._set_state(TrayState.IDLE)
+            self._settle_state()
             return
 
         self._spawn_job(recording)
@@ -137,7 +153,7 @@ class App:
         self._cancel_auto_stop()
         if self._recorder.is_recording:
             self._recorder.cancel()
-        self._set_state(TrayState.IDLE)
+        self._settle_state()
 
     # ---------------------------------------------------------------------- auto-stop
 
@@ -173,42 +189,74 @@ class App:
         with self._jobs:
             return self._jobs.wait_for(lambda: self._pending_jobs == 0, timeout=timeout_seconds)
 
-    def _job_finished(self) -> None:
+    def _spawn_job(self, recording: Recording, path: Path | None = None) -> None:
+        """Claim a file for this take and hand it to a worker thread.
+
+        The audio is not written here — that happens on the worker, because this method
+        may be running inside the Windows keyboard hook.
+        """
+        with self._jobs:
+            if path is None:
+                self._take_counter += 1
+                path = PENDING_DIR / f"take-{self._take_counter:04d}.wav"
+            self._claimed.add(path)
+            self._pending_jobs += 1
+
+        self._settle_state()
+        worker = threading.Thread(
+            target=self._transcribe_and_paste, args=(recording, path), daemon=True
+        )
+        worker.start()
+
+    def _finish_job(self, path: Path) -> None:
         with self._jobs:
             self._pending_jobs -= 1
+            self._claimed.discard(path)
             self._jobs.notify_all()
 
-    def _spawn_job(self, recording: Recording) -> None:
-        """Save the audio first, then hand it to a worker thread."""
-        self._keep_for_retry(recording.wav_bytes)
+    def _unclaimed_takes(self) -> list[Path]:
+        """Recordings on disk that no live job is responsible for, oldest first."""
         with self._jobs:
-            self._pending_jobs += 1
-        self._set_state(TrayState.TRANSCRIBING)
-        threading.Thread(target=self._transcribe_and_paste, args=(recording,), daemon=True).start()
+            claimed = set(self._claimed)
+        try:
+            found = list(PENDING_DIR.glob(PENDING_PATTERN))
+        except OSError:
+            return []
+        return sorted(p for p in found if p not in claimed)
 
     # ------------------------------------------------------------------- transcription
 
-    def _transcribe_and_paste(self, recording: Recording) -> None:
+    def _transcribe_and_paste(self, recording: Recording, path: Path) -> None:
         """Runs on a worker thread so the keyboard listener is never blocked."""
+        succeeded = False
         try:
+            self._keep_for_retry(recording.wav_bytes, path)
             with self._transcribing:
-                # Re-assert the state here, not at spawn time: a job queued behind another
-                # only becomes the one the icon is describing once it actually starts.
-                self._set_state(TrayState.TRANSCRIBING)
-                self._run_job(recording)
+                # Recompute the state here rather than at spawn time: a job queued behind
+                # another only becomes the one the icon is describing once it starts.
+                self._settle_state()
+                succeeded = self._run_job(recording, path)
         finally:
-            self._job_finished()
+            # Settle only after the count has dropped, or this job would still see itself
+            # as pending and leave the icon amber. On failure the error colour stands, and
+            # its own timer clears it.
+            self._finish_job(path)
+            if succeeded:
+                self._settle_state()
 
-    def _run_job(self, recording: Recording) -> None:
+    def _run_job(self, recording: Recording, path: Path) -> bool:
         try:
             text = self._transcriber.transcribe(recording.wav_bytes)
         except TranscriptionError as exc:
             self._report_error(str(exc), "ტექსტად გარდაქმნა ვერ მოხერხდა — ჩანაწერი შენახულია")
-            return
+            return False
 
         self._record_usage(recording.duration_seconds, len(text))
-        if self._paste(text):
-            self._discard_kept_recording()
+        if not self._paste(text):
+            return False
+
+        self._discard(path)
+        return True
 
     def _record_usage(self, seconds: float, characters: int) -> None:
         usage = self._usage.add(seconds)
@@ -238,23 +286,22 @@ class App:
             self._report_error(str(exc), "ჩასმა ვერ მოხერხდა — ტექსტი logs საქაღალდეშია")
             return False
 
-        self._set_state(TrayState.IDLE)
         return True
 
     # ------------------------------------------------------------------------- salvage
 
-    def _keep_for_retry(self, wav_bytes: bytes) -> None:
-        """Written before every upload, so nothing that kills the worker loses the words."""
+    def _keep_for_retry(self, wav_bytes: bytes, path: Path) -> None:
+        """Written before the upload, so anything that kills the worker leaves the words."""
         try:
-            LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            LAST_RECORDING_PATH.write_bytes(wav_bytes)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(wav_bytes)
         except OSError as exc:
             logger.warning("could not keep the recording for retry: %s", exc)
 
-    def _discard_kept_recording(self) -> None:
-        """The words made it into a window — the copy on disk is no longer needed."""
+    def _discard(self, path: Path) -> None:
+        """This take's words made it into a window — its copy on disk is no longer needed."""
         try:
-            LAST_RECORDING_PATH.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("could not remove the kept recording: %s", exc)
 
@@ -270,22 +317,21 @@ class App:
     # -------------------------------------------------------------------- tray actions
 
     def retry_last(self) -> None:
-        """Re-send the recording kept from the last job that did not finish."""
-        if self.is_busy:
-            self._notify("ჯერ წინა ჩანაწერი მუშავდება")
-            return
-        if not LAST_RECORDING_PATH.exists():
+        """Re-send the newest recording that no live job already owns."""
+        orphans = self._unclaimed_takes()
+        if not orphans:
             self._notify("ხელახლა გასაგზავნი ჩანაწერი არაა")
             return
 
+        path = orphans[-1]
         try:
-            wav_bytes = LAST_RECORDING_PATH.read_bytes()
+            wav_bytes = path.read_bytes()
         except OSError as exc:
             self._report_error(str(exc), "შენახული ჩანაწერი ვერ წაიკითხა")
             return
 
         duration = pcm_duration_seconds(wav_bytes, self._config.sample_rate)
-        self._spawn_job(Recording(wav_bytes=wav_bytes, duration_seconds=duration))
+        self._spawn_job(Recording(wav_bytes=wav_bytes, duration_seconds=duration), path)
 
     def usage_text(self) -> str:
         usage = self._usage.read()
@@ -304,6 +350,20 @@ class App:
         if self._tray is not None:
             self._tray.set_state(state)
 
+    def _settle_state(self) -> None:
+        """Show what is happening now, not what the calling thread happened to finish.
+
+        Several threads reach this — the keyboard hook, two timers, and every worker — so
+        none of them may assert a state blindly. Recording outranks transcribing, because
+        it is the one the user is actively doing.
+        """
+        if self._recorder.is_recording:
+            self._set_state(TrayState.RECORDING)
+        elif self.is_busy:
+            self._set_state(TrayState.TRANSCRIBING)
+        else:
+            self._set_state(TrayState.IDLE)
+
     def _notify(self, message: str) -> None:
         if self._tray is not None:
             self._tray.notify(message)
@@ -316,9 +376,8 @@ class App:
         self._clear_error_after(ERROR_DISPLAY_SECONDS)
 
     def _clear_error_after(self, seconds: float) -> None:
-        """Return the icon to grey, but only if nothing has started in the meantime."""
         self._cancel_error_reset()
-        timer = threading.Timer(seconds, self._reset_to_idle)
+        timer = threading.Timer(seconds, self._reset_after_error)
         timer.daemon = True
         timer.start()
         self._error_reset = timer
@@ -328,8 +387,16 @@ class App:
             self._error_reset.cancel()
             self._error_reset = None
 
-    def _reset_to_idle(self) -> None:
-        """Never overwrite the state of work that is still going on."""
+    def _reset_after_error(self) -> None:
         self._error_reset = None
-        if not self._recorder.is_recording and not self.is_busy:
-            self._set_state(TrayState.IDLE)
+        self._settle_state()
+
+
+def _highest_take_number(directory: Path) -> int:
+    """Continue numbering above whatever a previous session left behind."""
+    try:
+        names = [p.name for p in directory.glob(PENDING_PATTERN)]
+    except OSError:
+        return 0
+    numbers = [int(m.group(1)) for name in names if (m := PENDING_NUMBER.search(name))]
+    return max(numbers, default=0)

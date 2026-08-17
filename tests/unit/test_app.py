@@ -1,12 +1,13 @@
 """The state machine — the part most likely to lose the user's words.
 
 Every collaborator is a stand-in, so these run with no microphone, no keyboard hook and
-no network. What they protect: a recording is on disk before it is uploaded and gone only
-once the text has landed, the tray never describes a job that is not the live one, and no
-two jobs ever paste over each other.
+no network. What they protect: every take's audio is on disk before it is uploaded and
+gone only once its own text has landed, the tray describes what is happening rather than
+what a thread just finished, and no two jobs ever paste over each other.
 """
 
 import threading
+import time
 
 import pytest
 
@@ -41,9 +42,10 @@ def make_config(**overrides) -> Config:
     return Config(**{**values, **overrides})
 
 
-def two_seconds_of_audio() -> Recording:
-    pcm = b"\x00\x00" * (SAMPLE_RATE * 2)
-    return Recording(wav_bytes=build_wav(pcm, SAMPLE_RATE), duration_seconds=2.0)
+def audio(seconds: float = 2.0, marker: bytes = b"\x00\x00") -> Recording:
+    """A recording whose bytes are recognisable, so takes can be told apart on disk."""
+    pcm = marker * int(SAMPLE_RATE * seconds)
+    return Recording(wav_bytes=build_wav(pcm, SAMPLE_RATE), duration_seconds=seconds)
 
 
 class FakeRecorder:
@@ -56,7 +58,7 @@ class FakeRecorder:
 
     def stop(self):
         self.is_recording = False
-        return two_seconds_of_audio()
+        return audio()
 
     def cancel(self):
         self.is_recording = False
@@ -124,7 +126,7 @@ class FakeTray:
 def logs(tmp_path, monkeypatch):
     """Point every on-disk path at a temporary folder."""
     monkeypatch.setattr(app_module, "LOGS_DIR", tmp_path)
-    monkeypatch.setattr(app_module, "LAST_RECORDING_PATH", tmp_path / "last_recording.wav")
+    monkeypatch.setattr(app_module, "PENDING_DIR", tmp_path / "pending")
     monkeypatch.setattr(app_module, "LAST_TRANSCRIPT_PATH", tmp_path / "last_transcript.txt")
     return tmp_path
 
@@ -149,10 +151,32 @@ def build_app(config=None, transcriber=None, tray=None, recorder=None):
     return app
 
 
+def kept_recordings() -> list:
+    return sorted(app_module.PENDING_DIR.glob(app_module.PENDING_PATTERN))
+
+
+def wait_for_recordings(count: int, timeout: float = 5.0) -> list:
+    """The audio is written on the worker thread, so tests have to wait for it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = kept_recordings()
+        if len(found) >= count:
+            return found
+        time.sleep(0.01)
+    raise AssertionError(f"expected {count} kept recordings, found {len(kept_recordings())}")
+
+
 def run_one_job(app, recording=None):
     """Dictate once, synchronously — the worker is awaited before returning."""
-    app._spawn_job(recording or two_seconds_of_audio())
+    app._spawn_job(recording or audio())
     assert app._wait_for_jobs(5), "the worker did not finish"
+
+
+def _raiser(exc):
+    def fail(_text, **_kwargs):
+        raise exc
+
+    return fail
 
 
 # --------------------------------------------------------------- the happy path
@@ -167,7 +191,7 @@ def test_a_successful_dictation_pastes_the_text(logs, pasted):
 def test_the_recording_is_deleted_once_the_text_has_landed(logs, pasted):
     app = build_app()
     run_one_job(app)
-    assert not app_module.LAST_RECORDING_PATH.exists()
+    assert kept_recordings() == []
 
 
 def test_the_icon_ends_up_idle(logs, pasted):
@@ -186,9 +210,9 @@ def test_the_recording_is_on_disk_before_the_upload_starts(logs, pasted):
     transcriber = FakeTranscriber(gate=gate)
     app = build_app(transcriber=transcriber)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert transcriber.started.wait(timeout=5)
-    assert app_module.LAST_RECORDING_PATH.exists()  # already saved, upload still running
+    assert len(kept_recordings()) == 1  # saved before the upload, which is still running
 
     gate.set()
     assert app._wait_for_jobs(5)
@@ -198,22 +222,20 @@ def test_a_failed_transcription_keeps_the_recording(logs, pasted):
     app = build_app(transcriber=FakeTranscriber(error=TranscriptionError("no network")))
     run_one_job(app)
 
-    assert app_module.LAST_RECORDING_PATH.exists()
+    assert len(kept_recordings()) == 1
     assert pasted == []
 
 
 def test_a_refused_paste_keeps_the_recording(logs, monkeypatch):
     """The text is on the clipboard, but until it is in a window the audio stays."""
-    monkeypatch.setattr(
-        app_module, "inject_text", _raiser(PasteFailedError("the window refused it"))
-    )
+    monkeypatch.setattr(app_module, "inject_text", _raiser(PasteFailedError("window refused")))
     app = build_app()
     run_one_job(app)
-    assert app_module.LAST_RECORDING_PATH.exists()
+    assert len(kept_recordings()) == 1
 
 
 def test_an_unusable_clipboard_writes_the_text_to_a_file(logs, monkeypatch):
-    """Ctrl+V would find nothing here, so the words have to go somewhere the user can reach."""
+    """Ctrl+V would find nothing here, so the words have to go somewhere reachable."""
     monkeypatch.setattr(
         app_module, "inject_text", _raiser(ClipboardUnavailableError("clipboard locked"))
     )
@@ -236,27 +258,53 @@ def test_the_two_paste_failures_give_opposite_advice(logs, monkeypatch):
     assert "Ctrl+V" not in tray.messages[-1]
 
 
-def _raiser(exc):
-    def fail(_text, **_kwargs):
-        raise exc
-
-    return fail
+# --------------------------------------------- overlapping takes keep their own audio
 
 
-# ------------------------------------------------------------ overlapping jobs
+def test_a_second_take_does_not_overwrite_the_first_take_s_audio(logs, pasted):
+    """Each take gets its own file — one shared file destroyed the earlier safety net."""
+    gate = threading.Event()
+    app = build_app(transcriber=FakeTranscriber(gate=gate))
+
+    app._spawn_job(audio(marker=b"\x11\x11"))
+    assert app._transcriber.started.wait(timeout=5)
+    app._spawn_job(audio(marker=b"\x22\x22"))  # queued while the first is uploading
+
+    files = wait_for_recordings(2)
+    assert files[0].read_bytes() != files[1].read_bytes()
+
+    gate.set()
+    assert app._wait_for_jobs(5)
 
 
-def test_retry_is_refused_while_a_job_is_running(logs, pasted):
+def test_a_succeeding_take_does_not_delete_another_take_s_audio(logs, monkeypatch):
+    """Take A succeeding used to delete the file that by then belonged to take B."""
+    outcomes = {"paste_fails": False}
+
+    def paste(_text, **_kwargs):
+        if outcomes["paste_fails"]:
+            raise PasteFailedError("the second window refused it")
+
+    monkeypatch.setattr(app_module, "inject_text", paste)
+    app = build_app()
+
+    run_one_job(app, audio(marker=b"\x11\x11"))  # take A succeeds
+    outcomes["paste_fails"] = True
+    run_one_job(app, audio(marker=b"\x22\x22"))  # take B fails
+
+    assert len(kept_recordings()) == 1  # B survived; A cleaned up after itself
+
+
+def test_retry_never_re_sends_a_take_that_is_still_running(logs, pasted):
     """Two clicks on Retry used to paste the same words twice."""
     gate = threading.Event()
     transcriber = FakeTranscriber(gate=gate)
-    tray = FakeTray()
-    app = build_app(transcriber=transcriber, tray=tray)
+    app = build_app(transcriber=transcriber)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert transcriber.started.wait(timeout=5)
 
-    app.retry_last()  # the second click, while the first is still in flight
+    app.retry_last()  # the file on disk belongs to the running job
 
     gate.set()
     assert app._wait_for_jobs(5)
@@ -271,16 +319,15 @@ def test_a_queued_job_puts_the_icon_back_to_transcribing(logs, pasted):
     tray = FakeTray()
     app = build_app(transcriber=transcriber, tray=tray)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert transcriber.started.wait(timeout=5)
-    app._spawn_job(two_seconds_of_audio())  # queued behind the first
+    app._spawn_job(audio())
 
     gate.set()
     assert app._wait_for_jobs(5)
 
     assert transcriber.calls == 2
     assert tray.states[-1] is TrayState.IDLE
-    # TRANSCRIBING is asserted again when the queued job actually begins
     assert tray.states.count(TrayState.TRANSCRIBING) >= 3
 
 
@@ -292,12 +339,29 @@ def test_retry_says_so_when_there_is_nothing_to_retry(logs):
 
 
 def test_retry_resends_a_kept_recording(logs, pasted):
-    app_module.LAST_RECORDING_PATH.write_bytes(build_wav(b"\x00\x00" * SAMPLE_RATE, SAMPLE_RATE))
-    app = build_app()
+    app = build_app(transcriber=FakeTranscriber(error=TranscriptionError("offline")))
+    run_one_job(app)
+    assert len(kept_recordings()) == 1
 
+    app._transcriber.error = None  # the network came back
     app.retry_last()
     assert app._wait_for_jobs(5)
+
     assert pasted == [TRANSCRIPT]
+    assert kept_recordings() == []
+
+
+def test_numbering_continues_past_what_an_earlier_session_left(logs, pasted):
+    """Otherwise a new session would overwrite the recording it was meant to preserve."""
+    app_module.PENDING_DIR.mkdir(parents=True)
+    (app_module.PENDING_DIR / "take-0007.wav").write_bytes(b"from a previous run")
+
+    app = build_app(transcriber=FakeTranscriber(error=TranscriptionError("offline")))
+    app.start()
+    run_one_job(app)
+
+    assert (app_module.PENDING_DIR / "take-0007.wav").read_bytes() == b"from a previous run"
+    assert len(kept_recordings()) == 2
 
 
 # ------------------------------------------------------------------- shutdown
@@ -309,7 +373,7 @@ def test_quitting_waits_for_a_transcription_in_flight(logs, pasted):
     transcriber = FakeTranscriber(gate=gate)
     app = build_app(transcriber=transcriber)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert transcriber.started.wait(timeout=5)
 
     threading.Timer(0.2, gate.set).start()
@@ -320,17 +384,43 @@ def test_quitting_waits_for_a_transcription_in_flight(logs, pasted):
 
 
 def test_shutdown_gives_up_rather_than_hanging_forever(logs, pasted, monkeypatch):
-    """A stuck upload must not leave a window the user cannot close."""
+    """A stuck upload must not leave a tray icon the user cannot close."""
     monkeypatch.setattr(app_module, "SHUTDOWN_WAIT_SECONDS", 0.1)
     gate = threading.Event()
     transcriber = FakeTranscriber(gate=gate)
     app = build_app(transcriber=transcriber)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert transcriber.started.wait(timeout=5)
 
-    app.shutdown()  # returns despite the worker still being blocked
-    assert app_module.LAST_RECORDING_PATH.exists()  # the words survive the abandoned job
+    app.shutdown()
+    assert len(kept_recordings()) == 1  # the words survive the abandoned job
+
+    gate.set()
+    app._wait_for_jobs(5)
+
+
+def test_shutdown_twice_does_not_wait_twice(logs, pasted, monkeypatch):
+    """It is called from the tray menu and again from main()'s finally block.
+
+    Without the guard the user waits out the whole timeout a second time, with the tray
+    icon already gone — the app looks closed while the process lingers.
+    """
+    wait = 0.4
+    monkeypatch.setattr(app_module, "SHUTDOWN_WAIT_SECONDS", wait)
+    gate = threading.Event()
+    app = build_app(transcriber=FakeTranscriber(gate=gate))
+
+    app._spawn_job(audio())
+    assert app._transcriber.started.wait(timeout=5)
+
+    first_started = time.monotonic()
+    app.shutdown()  # waits out the timeout, then gives up
+    assert time.monotonic() - first_started >= wait
+
+    second_started = time.monotonic()
+    app.shutdown()
+    assert time.monotonic() - second_started < wait / 2  # returned at once
 
     gate.set()
     app._wait_for_jobs(5)
@@ -339,12 +429,13 @@ def test_shutdown_gives_up_rather_than_hanging_forever(logs, pasted, monkeypatch
 def test_shutdown_releases_the_microphone_and_the_keyboard_hook(logs):
     recorder = FakeRecorder()
     recorder.is_recording = True
+    hotkey = FakeHotkey()
     app = App(
         make_config(),
         recorder=recorder,
         transcriber=FakeTranscriber(),
         usage=FakeUsage(),
-        hotkey=(hotkey := FakeHotkey()),
+        hotkey=hotkey,
     )
     app.attach_tray(FakeTray())
 
@@ -357,16 +448,28 @@ def test_shutdown_releases_the_microphone_and_the_keyboard_hook(logs):
 # ------------------------------------------------------------- state bookkeeping
 
 
+def test_a_finished_job_does_not_paint_idle_over_an_active_recording(logs, pasted):
+    """The icon must describe what is happening, not what a worker thread just finished."""
+    recorder = FakeRecorder()
+    tray = FakeTray()
+    app = build_app(recorder=recorder, tray=tray)
+
+    recorder.is_recording = True  # the user started a new take meanwhile
+    run_one_job(app)
+
+    assert tray.states[-1] is TrayState.RECORDING
+
+
 def test_the_error_icon_does_not_clear_while_a_job_is_still_running(logs, pasted):
     """The old timer only looked at the microphone, so it cleared during a queued job."""
     gate = threading.Event()
     tray = FakeTray()
     app = build_app(transcriber=FakeTranscriber(gate=gate), tray=tray)
 
-    app._spawn_job(two_seconds_of_audio())
+    app._spawn_job(audio())
     assert app._transcriber.started.wait(timeout=5)
 
-    app._reset_to_idle()  # what the 6-second timer would do
+    app._reset_after_error()  # what the 6-second timer would do
     assert TrayState.IDLE not in tray.states
 
     gate.set()
@@ -384,3 +487,4 @@ def test_a_clip_too_short_to_be_speech_is_dropped_without_paying(logs, pasted):
 
     assert transcriber.calls == 0
     assert pasted == []
+    assert kept_recordings() == []
