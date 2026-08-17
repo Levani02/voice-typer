@@ -93,6 +93,14 @@ class HotkeyLogic:
         """Reset after the app stopped recording on its own — the auto-stop ceiling, or an error."""
         self._state = _State.AWAIT_RELEASE if self._state is _State.HOLDING else _State.IDLE
 
+    def force_recording(self) -> None:
+        """A recording was started from the window rather than the key.
+
+        Latched, not holding: the user is not touching the key, so the next press should
+        stop the recording rather than start a second one.
+        """
+        self._state = _State.LATCHED
+
 
 def parse_key(name: str) -> keyboard.Key | keyboard.KeyCode:
     """Turn a config value such as 'f9', 'ctrl_r' or 'caps_lock' into a pynput key."""

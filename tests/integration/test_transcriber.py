@@ -43,9 +43,11 @@ def make_transcriber(monkeypatch, responses, keyterms=(), billed_seconds=None):
     return Transcriber("test-key-not-real", "scribe_v2", "kat", keyterms), client
 
 
-def http_error(status: int) -> Exception:
+def http_error(status: int, message: str | None = None) -> Exception:
     error = Exception(f"HTTP {status}")
     error.status_code = status
+    if message is not None:
+        error.body = {"detail": {"message": message}}
     return error
 
 
@@ -106,6 +108,26 @@ def test_a_rejected_key_is_not_retried_and_says_so(monkeypatch):
     with pytest.raises(TranscriptionError, match="API key"):
         transcriber.transcribe(WAV_BYTES)
     assert len(client.speech_to_text.calls) == 1
+
+
+def test_a_key_missing_the_permission_is_told_apart_from_a_wrong_key(monkeypatch):
+    """Really happened during setup. "The key was rejected" sends the user to recreate a
+    key that was fine — the actual fix is one toggle on the same key."""
+    failure = http_error(
+        401, "The API key you used is missing the permission speech_to_text to execute this"
+    )
+    transcriber, _ = make_transcriber(monkeypatch, [failure])
+
+    with pytest.raises(TranscriptionError, match="Speech to Text permission"):
+        transcriber.transcribe(WAV_BYTES)
+
+
+def test_the_server_explanation_is_only_used_when_it_is_about_permissions(monkeypatch):
+    failure = http_error(401, "Invalid API key")
+    transcriber, _ = make_transcriber(monkeypatch, [failure])
+
+    with pytest.raises(TranscriptionError, match="rejected the API key"):
+        transcriber.transcribe(WAV_BYTES)
 
 
 def test_rate_limiting_is_retried(monkeypatch):

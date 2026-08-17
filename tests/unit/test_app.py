@@ -54,18 +54,30 @@ def audio(seconds: float = 2.0, marker: bytes = b"\x00\x00") -> Recording:
 class FakeRecorder:
     def __init__(self):
         self.is_recording = False
+        self.is_paused = False
         self.cancelled = False
+        self.level = 0.0
+        self.elapsed_seconds = 0.0
 
     def start(self):
         self.is_recording = True
+        self.is_paused = False
 
     def stop(self):
         self.is_recording = False
+        self.is_paused = False
         return audio()
 
     def cancel(self):
         self.is_recording = False
+        self.is_paused = False
         self.cancelled = True
+
+    def pause(self):
+        self.is_paused = True
+
+    def resume(self):
+        self.is_paused = False
 
 
 class FakeTranscriber:
@@ -108,14 +120,18 @@ class FakeHotkeyLogic:
     def force_idle(self):
         pass
 
+    def force_recording(self):
+        pass
+
 
 class FakeHotkey:
     def __init__(self):
         self.logic = FakeHotkeyLogic()
         self.stopped = False
+        self.starts = 0
 
     def start(self):
-        pass
+        self.starts += 1
 
     def stop(self):
         self.stopped = True
@@ -489,6 +505,145 @@ def test_the_error_icon_does_not_clear_while_a_job_is_still_running(logs, pasted
 
     gate.set()
     assert app._wait_for_jobs(5)
+
+
+# ------------------------------------------------- what the window shows and controls
+
+
+def test_the_window_reports_each_state_in_turn(logs, pasted):
+    gate = threading.Event()
+    recorder = FakeRecorder()
+    app = build_app(recorder=recorder, transcriber=FakeTranscriber(gate=gate))
+
+    assert app.ui_state() == "idle"
+
+    app.toggle_recording()
+    assert app.ui_state() == "recording"
+
+    app.toggle_pause()
+    assert app.ui_state() == "paused"
+
+    app.toggle_pause()
+    assert app.ui_state() == "recording"
+
+    app.toggle_recording()
+    assert app._transcriber.started.wait(timeout=5)
+    assert app.ui_state() == "transcribing"
+
+    gate.set()
+    assert app._wait_for_jobs(5)
+    assert app.ui_state() == "idle"
+
+
+def test_the_window_button_starts_and_stops_the_same_way_the_key_does(logs, pasted):
+    app = build_app()
+
+    app.toggle_recording()
+    app.toggle_recording()
+    assert app._wait_for_jobs(5)
+
+    assert pasted == [TRANSCRIPT]
+
+
+def test_pausing_does_not_throw_the_take_away(logs, pasted):
+    """Pause has to keep what was said — otherwise it is just a slower cancel."""
+    recorder = FakeRecorder()
+    app = build_app(recorder=recorder)
+
+    app.toggle_recording()
+    app.toggle_pause()
+    assert recorder.is_recording  # still a take in progress
+    assert not recorder.cancelled
+
+    app.toggle_pause()
+    app.toggle_recording()
+    assert app._wait_for_jobs(5)
+    assert pasted == [TRANSCRIPT]
+
+
+def test_pausing_stops_the_auto_stop_clock(logs, pasted):
+    """Otherwise a take paused for five minutes would be cut off on resume."""
+    app = build_app()
+
+    app.toggle_recording()
+    assert app._auto_stop is not None
+
+    app.toggle_pause()
+    assert app._auto_stop is None
+
+    app.toggle_pause()
+    assert app._auto_stop is not None
+
+
+def test_the_power_button_stops_the_hotkey_and_the_recording(logs, pasted):
+    recorder = FakeRecorder()
+    hotkey = FakeHotkey()
+    app = App(
+        make_config(),
+        recorder=recorder,
+        transcriber=FakeTranscriber(),
+        usage=FakeUsage(),
+        hotkey=hotkey,
+    )
+    app.attach_tray(FakeTray())
+
+    app.toggle_recording()
+    app.toggle_enabled()
+
+    assert app.ui_state() == "disabled"
+    assert hotkey.stopped
+    assert recorder.cancelled
+    assert pasted == []  # nothing was transcribed, nothing was paid for
+
+
+def test_the_power_button_switches_listening_back_on(logs, pasted):
+    hotkey = FakeHotkey()
+    app = App(
+        make_config(),
+        recorder=FakeRecorder(),
+        transcriber=FakeTranscriber(),
+        usage=FakeUsage(),
+        hotkey=hotkey,
+    )
+    app.attach_tray(FakeTray())
+
+    app.toggle_enabled()
+    app.toggle_enabled()
+
+    assert app.ui_state() == "idle"
+    assert hotkey.starts == 1
+
+
+def test_the_record_button_does_nothing_while_switched_off(logs, pasted):
+    app = build_app()
+    app.toggle_enabled()
+
+    app.toggle_recording()
+
+    assert app.ui_state() == "disabled"
+    assert pasted == []
+
+
+def test_the_cancel_button_spends_nothing(logs, pasted):
+    transcriber = FakeTranscriber()
+    app = build_app(transcriber=transcriber)
+
+    app.toggle_recording()
+    app.cancel_recording()
+
+    assert app.ui_state() == "idle"
+    assert transcriber.calls == 0
+    assert kept_recordings() == []
+
+
+def test_an_error_shows_in_the_window_and_then_clears(logs, pasted):
+    app = build_app(transcriber=FakeTranscriber(error=TranscriptionError("offline")))
+    run_one_job(app)
+
+    assert app.ui_state() == "error"
+
+    app._reset_after_error()
+    assert app.ui_state() == "idle"
 
 
 def test_a_clip_too_short_to_be_speech_is_dropped_without_paying(logs, pasted):

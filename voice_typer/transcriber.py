@@ -68,10 +68,35 @@ def _is_retryable(exc: Exception) -> bool:
     return status >= 500 or status == 429
 
 
+def _server_message(exc: Exception) -> str:
+    """The explanation ElevenLabs itself gave, if the response carried one.
+
+    This is the server's own words about our request, not our request — so it cannot
+    contain the API key. It is worth surfacing: 'the key lacks Speech to Text permission'
+    is something the user can act on, where 'the key was rejected' sends them looking in
+    the wrong place.
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+            return detail["message"]
+        if isinstance(detail, str):
+            return detail
+    return ""
+
+
 def _explain(exc: Exception) -> str:
     """Turn an SDK exception into a sentence, without echoing the request back."""
     status = getattr(exc, "status_code", None)
     if status in (401, 403):
+        reason = _server_message(exc)
+        if "permission" in reason.lower():
+            return (
+                "the API key does not have Speech to Text permission — open "
+                "elevenlabs.io/app/settings/api-keys, edit the key, and switch "
+                "'Speech to Text' to Access"
+            )
         return "ElevenLabs rejected the API key — check it at elevenlabs.io/app/settings/api-keys"
     if status == 429:
         return "ElevenLabs is rate limiting the account — wait a moment and try again"

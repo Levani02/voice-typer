@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from voice_typer.config import LOGS_DIR, Config
@@ -52,6 +53,17 @@ ERROR_DISPLAY_SECONDS = 6.0
 SHUTDOWN_WAIT_SECONDS = 5.0
 
 SECONDS_PER_DAY = 86_400
+
+# The window and the tray must never disagree about what is happening, so both are drawn
+# from the single word `ui_state` returns.
+_TRAY_STATE_FOR = {
+    "idle": TrayState.IDLE,
+    "recording": TrayState.RECORDING,
+    "paused": TrayState.PAUSED,
+    "transcribing": TrayState.TRANSCRIBING,
+    "error": TrayState.ERROR,
+    "disabled": TrayState.DISABLED,
+}
 
 
 class App:
@@ -86,6 +98,9 @@ class App:
         self._claimed: set[Path] = set()  # files a live job is responsible for
         self._take_counter = 0
         self._has_shut_down = False
+        self._enabled = True  # the power button in the window turns the hotkey off
+        self._showing_error = False
+        self._quit_handler: Callable[[], None] | None = None
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -127,6 +142,7 @@ class App:
 
     def _start_recording(self) -> None:
         self._cancel_error_reset()
+        self._showing_error = False
         try:
             self._recorder.start()
         except RecorderError as exc:
@@ -134,7 +150,7 @@ class App:
             self._report_error(str(exc), "მიკროფონი ვერ ჩაირთო")
             return
 
-        self._set_state(TrayState.RECORDING)
+        self._settle_state()
         self._schedule_auto_stop()
 
     def _stop_recording(self) -> None:
@@ -158,6 +174,85 @@ class App:
         if self._recorder.is_recording:
             self._recorder.cancel()
         self._settle_state()
+
+    # -------------------------------------------------------------- what the window uses
+
+    def set_quit_handler(self, handler: Callable[[], None]) -> None:
+        """Called when the window's power-off or close is used. Set by main()."""
+        self._quit_handler = handler
+
+    def ui_state(self) -> str:
+        """One word for what is happening, for the window and the tray to agree on."""
+        if not self._enabled:
+            return "disabled"
+        if self._recorder.is_paused:
+            return "paused"
+        if self._recorder.is_recording:
+            return "recording"
+        if self.is_busy:
+            return "transcribing"
+        if self._showing_error:
+            return "error"
+        return "idle"
+
+    def ui_elapsed_seconds(self) -> float:
+        return self._recorder.elapsed_seconds
+
+    def ui_level(self) -> float:
+        return self._recorder.level
+
+    def ui_hotkey_label(self) -> str:
+        return self._config.hotkey.upper()
+
+    def toggle_recording(self) -> None:
+        """The window's record button. Does what pressing the hotkey would do."""
+        if not self._enabled:
+            return
+        if self._recorder.is_recording:
+            self._hotkey.logic.force_idle()
+            self._stop_recording()
+        else:
+            self._hotkey.logic.force_recording()
+            self._start_recording()
+
+    def toggle_pause(self) -> None:
+        """Suspend capture without losing what has been said so far, or carry on."""
+        if not self._recorder.is_recording:
+            return
+        try:
+            if self._recorder.is_paused:
+                self._recorder.resume()
+                self._schedule_auto_stop()
+            else:
+                self._cancel_auto_stop()
+                self._recorder.pause()
+        except RecorderError as exc:
+            self._hotkey.logic.force_idle()
+            self._report_error(str(exc), "მიკროფონი ვერ ჩაირთო")
+            return
+        self._settle_state()
+
+    def cancel_recording(self) -> None:
+        """The window's ✕ button — throw the take away, spend nothing."""
+        self._hotkey.logic.force_idle()
+        self._cancel_recording()
+
+    def toggle_enabled(self) -> None:
+        """The power button: stop listening for the hotkey entirely, or start again."""
+        if self._enabled:
+            self._enabled = False
+            self._cancel_recording()
+            self._hotkey.stop()
+            logger.info("hotkey listening switched off from the window")
+        else:
+            self._enabled = True
+            self._hotkey.start()
+            logger.info("hotkey listening switched back on")
+        self._settle_state()
+
+    def quit(self) -> None:
+        if self._quit_handler is not None:
+            self._quit_handler()
 
     # ---------------------------------------------------------------------- auto-stop
 
@@ -400,12 +495,7 @@ class App:
         none of them may assert a state blindly. Recording outranks transcribing, because
         it is the one the user is actively doing.
         """
-        if self._recorder.is_recording:
-            self._set_state(TrayState.RECORDING)
-        elif self.is_busy:
-            self._set_state(TrayState.TRANSCRIBING)
-        else:
-            self._set_state(TrayState.IDLE)
+        self._set_state(_TRAY_STATE_FOR[self.ui_state()])
 
     def _notify(self, message: str) -> None:
         if self._tray is not None:
@@ -414,6 +504,7 @@ class App:
     def _report_error(self, detail: str, user_message: str) -> None:
         """Detail goes to the log; the user gets a sentence they can act on."""
         logger.error("%s: %s", user_message, detail)
+        self._showing_error = True
         self._set_state(TrayState.ERROR)
         self._notify(user_message)
         self._clear_error_after(ERROR_DISPLAY_SECONDS)
@@ -432,6 +523,7 @@ class App:
 
     def _reset_after_error(self) -> None:
         self._error_reset = None
+        self._showing_error = False
         self._settle_state()
 
 

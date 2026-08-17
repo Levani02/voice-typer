@@ -5,6 +5,8 @@ samples the callback collected all reach the WAV, and a device that dies does no
 the app believing it is still recording — which would make the hotkey look broken.
 """
 
+import time
+
 import pytest
 
 from voice_typer import recorder as recorder_module
@@ -170,6 +172,91 @@ def test_the_configured_device_and_rate_are_used(fake_audio):
     assert opened[0].callback is not None
     stream = opened[0]
     assert stream.finished_callback is not None
+
+
+def test_pausing_releases_the_microphone_but_keeps_the_audio(fake_audio):
+    """The mic's in-use light going out is the only honest way to show nothing is captured."""
+    opened, _ = fake_audio
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    opened[0].feed(b"\x01\x02" * 100)
+    recorder.pause()
+
+    assert opened[0].closed  # the device really is released
+    assert recorder.is_paused
+    assert recorder.is_recording  # but a take is still in progress
+    assert recorder.level == 0.0
+
+
+def test_resuming_carries_on_the_same_take(fake_audio):
+    opened, _ = fake_audio
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    opened[0].feed(b"\x01\x02" * 100)
+    recorder.pause()
+    recorder.resume()
+    opened[1].feed(b"\x03\x04" * 100)
+    result = recorder.stop()
+
+    assert len(opened) == 2  # a second stream was opened
+    assert result.duration_seconds == pytest.approx(200 / SAMPLE_RATE)  # both halves kept
+
+
+def test_time_spent_paused_is_not_counted(fake_audio):
+    """The timer in the window would otherwise keep climbing while nothing is recorded."""
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    recorder.pause()
+    paused_at = recorder.elapsed_seconds
+    time.sleep(0.15)
+
+    assert recorder.elapsed_seconds == pytest.approx(paused_at, abs=0.01)
+
+
+def test_pausing_twice_is_harmless(fake_audio):
+    opened, _ = fake_audio
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    recorder.pause()
+    recorder.pause()
+
+    assert recorder.is_paused
+    assert len(opened) == 1
+
+
+def test_a_new_take_does_not_inherit_the_previous_one_s_audio(fake_audio):
+    opened, _ = fake_audio
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    opened[0].feed(b"\xff\xff" * 100)
+    recorder.pause()
+    recorder.stop()
+
+    recorder.start()
+    opened[1].feed(b"\x01\x02" * 50)
+    result = recorder.stop()
+
+    assert result.duration_seconds == pytest.approx(50 / SAMPLE_RATE)
+
+
+def test_the_level_meter_reads_loud_audio_higher_than_quiet(fake_audio):
+    opened, _ = fake_audio
+    recorder = Recorder(SAMPLE_RATE)
+    recorder.start()
+
+    opened[0].feed(b"\x00\x00" * 100)
+    quiet = recorder.level
+    opened[0].feed(b"\x00\x40" * 100)
+    loud = recorder.level
+
+    assert quiet == 0.0
+    assert loud > quiet
+    assert 0.0 <= loud <= 1.0
 
 
 def test_wav_duration_rejects_something_that_is_not_a_recording():

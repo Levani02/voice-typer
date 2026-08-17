@@ -24,9 +24,11 @@ class TrayState(Enum):
     """Colour and tooltip for each thing the app can be doing."""
 
     IDLE = ("#8a8a8a", "მზადაა — დააჭირე ღილაკს და ილაპარაკე")
-    RECORDING = ("#d92d20", "იწერს...")
-    TRANSCRIBING = ("#f5a623", "ტექსტად გარდაქმნა...")
+    RECORDING = ("#ff453a", "იწერს...")
+    PAUSED = ("#ffd60a", "დაპაუზებულია")
+    TRANSCRIBING = ("#ff9f0a", "ტექსტად გარდაქმნა...")
     ERROR = ("#7a1512", "შეცდომა — იხილე logs\\voice_typer.log")
+    DISABLED = ("#48484a", "გამორთულია — ღილაკს არ უსმენს")
 
     def __init__(self, colour: str, tooltip: str) -> None:
         self.colour = colour
