@@ -113,6 +113,7 @@ class App:
         self._quit_handler: Callable[[], None] | None = None
         self._target_window = 0  # where the user was typing before touching this app
         self._watching_focus = threading.Event()
+        self._device_label: str | None = None  # looked up once, on first use
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -234,6 +235,12 @@ class App:
 
     def ui_hotkey_label(self) -> str:
         return self._config.hotkey.upper()
+
+    def ui_device_label(self) -> str:
+        """Which microphone is in use, for the line along the bottom of the window."""
+        if self._device_label is None:
+            self._device_label = _describe_input_device(self._config.input_device)
+        return self._device_label
 
     def toggle_recording(self) -> None:
         """The window's record button. Does what pressing the hotkey would do."""
@@ -557,6 +564,26 @@ class App:
         self._error_reset = None
         self._showing_error = False
         self._settle_state()
+
+
+def _describe_input_device(device: int | str | None) -> str:
+    """A short name for the microphone in use, for the window's footer.
+
+    Queried lazily and never allowed to fail: this is decoration, and PortAudio can throw
+    for a dozen reasons that have nothing to do with whether dictation works.
+    """
+    try:
+        import sounddevice as sd
+
+        name = str(sd.query_devices(device, "input")["name"])
+    except Exception:
+        return "მიკროფონი"
+
+    # MME truncates names at 31 characters, so they arrive already cut off mid-word. The
+    # window has room for about fifteen more, and a name that runs long collides with the
+    # shortcut hint on the other side of the footer.
+    name = name.strip().split("(")[0].strip()
+    return f"მიკროფონი: {name[:16].rstrip()}" if name else "მიკროფონი"
 
 
 def _highest_take_number(directory: Path) -> int:

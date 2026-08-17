@@ -21,7 +21,10 @@ hotkey listener  →  recorder  →  ElevenLabs Scribe v2  →  text injector
 | `voice_typer/hotkey.py` | global key listener; tells hold apart from tap |
 | `voice_typer/transcriber.py` | ElevenLabs Scribe v2 client, one retry, usage accounting |
 | `voice_typer/injector.py` | clipboard save → set → `Ctrl+V` → restore |
-| `voice_typer/tray.py` | tray icon, state colours, menu, notifications |
+| `voice_typer/overlay.py` | the recorder window — the app's visible surface |
+| `voice_typer/widget_theme.py` | colours, and the drawing Tk cannot do by itself |
+| `voice_typer/tray.py` | tray icon, kept as a fallback for the window |
+| `voice_typer/single_instance.py` | refuses to start a second copy |
 | `voice_typer/app.py` | the state machine that connects everything above |
 
 `app.py` is the only module aware of more than one other module. Every other file can be
@@ -85,6 +88,32 @@ the disk, with `pasted N characters` in the log.
 `0x56` is VK_V — the same physical key on every layout. `Key.ctrl` and `Key.f9` were always
 virtual-key based, so only the "v" was ever wrong. The same trap applies to `_same_key` in
 `hotkey.py` if the hotkey is ever changed from `f9` to a single letter.
+
+## The window is drawn, not laid out
+
+Tk offers no gradients, no rounded corners, no shadows and no alpha, and the design has
+all four. So the card is painted on a Canvas by `widget_theme`:
+
+- **gradients** — one horizontal line per row, its colour interpolated between two ends
+- **rounded corners** — each row is inset by how far the arc has come in at that height,
+  so a stack of lines forms a rounded rectangle
+- **translucency** — blended against the colour underneath before drawing, since there is
+  nothing to be translucent over at draw time
+- **the window's own corners** — Windows removes every pixel of one exact colour from the
+  window (`-transparentcolor`), so what sits outside the card's curve is the desktop
+  rather than a black box
+
+Buttons are canvas drawings with hit-testing, not widgets: that is what allows the
+gradient, the hover lift, and the disabled state to look like one designed surface.
+
+Three constraints learned the hard way, all now covered by tests:
+
+- **One Tk root per process.** Creating a second — even after destroying the first —
+  fails. The window tests share a single window for that reason.
+- **Consolas has no Georgian.** Tk substitutes a wider font for those runs, so a line
+  sized against the monospace metrics overflows. The footer text is kept short for it.
+- **A borderless window that is hidden and shown again can come back unmapped**, so it is
+  never withdrawn; it is created visible and stays that way.
 
 ## Where things are written
 
