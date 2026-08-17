@@ -244,7 +244,9 @@ def _format_elapsed(seconds: float) -> str:
 class OverlayWindow:
     """The floating recorder. `run` blocks and owns the main thread."""
 
-    def __init__(self, controller: Controller, position_path: Path) -> None:
+    def __init__(
+        self, controller: Controller, position_path: Path, window_scale: float = 1.0
+    ) -> None:
         self._controller = controller
         self._position_path = position_path
         self._drag_origin: tuple[int, int] | None = None
@@ -255,7 +257,10 @@ class OverlayWindow:
         self._levels = [0.0] * BAR_COUNT
         self._meter_settled = False
         self._meter_colour = ""
-        self._scale = display_scale()
+        # The display's own scaling, then the user's preference on top of it. Both go
+        # through the same multiplier, so a smaller window is drawn small rather than
+        # drawn large and shrunk — which is what would make it soft again.
+        self._scale = display_scale() * window_scale
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
         # shown again can come back unmapped, which is exactly as useful as no window.

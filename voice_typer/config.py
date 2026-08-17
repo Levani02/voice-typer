@@ -33,6 +33,7 @@ DEFAULTS: dict[str, object] = {
     "price_per_hour_usd": 0.22,
     "keyterms": [],
     "prune_takes_after_days": 7,
+    "window_scale": 1.0,
 }
 
 # name -> (minimum, maximum), inclusive. Guards against a typo turning into a bill.
@@ -44,6 +45,9 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "clipboard_restore_delay_ms": (0, 5_000),
     "price_per_hour_usd": (0, 100),
     "prune_takes_after_days": (1, 365),
+    # How large the recorder window is drawn, on top of the display's own scaling. Below
+    # about a third the Georgian labels stop being legible at any DPI.
+    "window_scale": (0.3, 2.0),
 }
 
 # Above this many key terms ElevenLabs bills a 20-second minimum per request, which would
@@ -74,6 +78,7 @@ class Config:
     price_per_hour_usd: float
     keyterms: tuple[str, ...]
     prune_takes_after_days: int
+    window_scale: float
     log_transcripts: bool
 
 
@@ -192,5 +197,6 @@ def load_config(config_path: Path | None = None) -> Config:
         price_per_hour_usd=float(values["price_per_hour_usd"]),
         keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
         prune_takes_after_days=int(values["prune_takes_after_days"]),
+        window_scale=float(values["window_scale"]),
         log_transcripts=os.environ.get("LOG_TRANSCRIPTS", "").strip().lower() == "true",
     )

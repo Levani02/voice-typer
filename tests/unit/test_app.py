@@ -40,6 +40,7 @@ def make_config(**overrides) -> Config:
         "price_per_hour_usd": 0.22,
         "keyterms": (),
         "prune_takes_after_days": 7,
+        "window_scale": 1.0,
         "log_transcripts": False,
     }
     return Config(**{**values, **overrides})

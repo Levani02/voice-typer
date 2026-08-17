@@ -11,5 +11,6 @@
   "model_id": "scribe_v2",
   "price_per_hour_usd": 0.22,
   "keyterms": [],
-  "prune_takes_after_days": 7
+  "prune_takes_after_days": 7,
+  "window_scale": 0.5
 }

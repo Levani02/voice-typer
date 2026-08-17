@@ -58,11 +58,19 @@ def test_malformed_json_names_the_line(tmp_path):
         ("max_recording_seconds", 99_999),  # a ceiling this high could run up a bill
         ("sample_rate", 100),
         ("price_per_hour_usd", -1),
+        ("window_scale", 0),  # a window with no size at all
+        ("window_scale", 0.1),  # too small for the Georgian labels to be read
+        ("window_scale", 5),  # larger than most screens
     ],
 )
 def test_out_of_range_numbers_are_rejected(tmp_path, setting, value):
     with pytest.raises(ConfigError, match=setting):
         load_config(write_config(tmp_path, {setting: value}))
+
+
+def test_window_scale_is_read_and_defaults_to_full_size(tmp_path):
+    assert load_config(write_config(tmp_path, {"window_scale": 0.5})).window_scale == 0.5
+    assert load_config(write_config(tmp_path, {})).window_scale == 1.0
 
 
 def test_text_where_a_number_belongs_is_rejected(tmp_path):
