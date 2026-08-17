@@ -1,0 +1,51 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+serviceAccountKey.json
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Recorded audio — user speech, never leaves this machine via git
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Runtime output
+logs/
+usage.json
+
+# Node (in case tooling is added later)
+node_modules/
+
+# IDE
+.idea/
+.vscode/*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
