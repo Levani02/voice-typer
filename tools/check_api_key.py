@@ -103,9 +103,11 @@ def main() -> int:
         probe_speech_to_text(client)
 
     print(
-        "\nOK means the key reaches that area. 403 means the key is valid but not scoped "
-        "for it.\n401 invalid_api_key means the key itself was not accepted at all — a "
-        "different problem\nfrom a missing permission."
+        "\nOK means the key reaches that area.\n"
+        "401 missing_permissions means the key is valid but not scoped for it — measured, "
+        "despite\nthird-party guides claiming 403.\n"
+        "401 invalid_api_key means the key itself was not accepted at all, which is a "
+        "different\nproblem from a missing permission and is not fixed by changing scopes."
     )
     return 0
 
