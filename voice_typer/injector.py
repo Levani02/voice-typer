@@ -15,9 +15,22 @@ import logging
 import time
 
 import pyperclip
-from pynput.keyboard import Controller, Key
+from pynput.keyboard import Controller, Key, KeyCode
 
 logger = logging.getLogger(__name__)
+
+# The paste key, addressed by virtual-key code rather than by the character "v".
+#
+# This is not a nicety. pynput resolves a character through VkKeyScanW against the calling
+# thread's active keyboard layout — and the Georgian layout has no Latin "v", so the lookup
+# fails and pynput falls back to KEYEVENTF_UNICODE, which Windows delivers as VK_PACKET
+# with wVk = 0. Ctrl + VK_PACKET matches no paste accelerator, yet SendInput still reports
+# success, so the app would believe it had pasted, delete the recording, and restore the
+# old clipboard over the transcript. Measured on this machine:
+# VkKeyScanExW('v', layout 0x0437) = -1, while layout 0x0409 gives 86.
+#
+# 0x56 is VK_V, which means the same physical key on every layout.
+PASTE_KEY = KeyCode.from_vk(0x56)
 
 # Virtual-key codes for the modifiers that would corrupt a synthetic Ctrl+V if still held.
 _MODIFIER_VK_CODES = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # shift, ctrl, alt, left win, right win
@@ -75,17 +88,32 @@ def _read_clipboard() -> str | None:
 
 
 def _write_clipboard(text: str) -> None:
+    """Put the text on the clipboard and confirm it actually took.
+
+    pyperclip's Windows path can return without raising while another program holds the
+    clipboard open, so the write is read back rather than assumed.
+    """
     try:
         pyperclip.copy(text)
     except Exception as exc:
         raise ClipboardUnavailableError(f"could not write to the clipboard: {exc}") from exc
 
+    try:
+        written = pyperclip.paste()
+    except Exception:
+        return  # unreadable but possibly written — pasting is still worth attempting
+
+    if written != text:
+        raise ClipboardUnavailableError(
+            "the clipboard did not take the text — another program is holding it"
+        )
+
 
 def _send_paste(keyboard: Controller) -> None:
     try:
         with keyboard.pressed(Key.ctrl):
-            keyboard.press("v")
-            keyboard.release("v")
+            keyboard.press(PASTE_KEY)
+            keyboard.release(PASTE_KEY)
     except Exception as exc:
         raise PasteFailedError(f"the paste keystroke was rejected: {exc}") from exc
 

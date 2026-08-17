@@ -89,6 +89,17 @@ class TrayIcon:
         except Exception as exc:  # a repaint failure must never take the app down
             logger.warning("could not update the tray icon: %s", exc)
 
+    def refresh_menu(self) -> None:
+        """Rebuild the menu so the cost line is current.
+
+        pystray reuses the menu handle it built at startup, so without this the usage
+        figure the user sees is whatever it was when the app launched.
+        """
+        try:
+            self._icon.update_menu()
+        except Exception as exc:
+            logger.warning("could not refresh the tray menu: %s", exc)
+
     def notify(self, message: str, title: str = APP_NAME) -> None:
         """Show a desktop notification. Never contains a key or a transcript."""
         try:

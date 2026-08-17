@@ -68,6 +68,27 @@ def test_release_after_escape_does_not_stop_again():
     assert logic.on_release(5000) is Action.NONE
 
 
+def test_key_repeat_after_escape_does_not_restart_recording():
+    """Windows repeats key-down while a key is held. Landing in IDLE after Escape would
+    make the very next repeat restart the recording the user just cancelled."""
+    logic = make_logic()
+    logic.on_press(0)
+    logic.on_escape()
+
+    assert logic.on_press(10) is Action.NONE
+    assert logic.on_press(20) is Action.NONE
+    assert not logic.is_recording
+
+
+def test_the_key_works_again_after_escape_and_a_real_release():
+    logic = make_logic()
+    logic.on_press(0)
+    logic.on_escape()
+    logic.on_release(100)
+
+    assert logic.on_press(2000) is Action.START
+
+
 def test_escape_cancels_a_latched_recording():
     logic = make_logic()
     logic.on_press(0)
@@ -96,6 +117,25 @@ def test_force_idle_after_auto_stop_swallows_the_pending_release():
     logic.force_idle()  # the app hit its recording ceiling and stopped by itself
     assert not logic.is_recording
     assert logic.on_release(9000) is Action.NONE
+
+
+def test_key_repeat_after_the_auto_stop_ceiling_does_not_restart_recording():
+    """The key is still held when the ceiling fires; its repeats must be ignored."""
+    logic = make_logic()
+    logic.on_press(0)
+    logic.force_idle()
+
+    assert logic.on_press(10) is Action.NONE
+    assert not logic.is_recording
+
+
+def test_the_key_works_again_after_the_ceiling_and_a_real_release():
+    logic = make_logic()
+    logic.on_press(0)
+    logic.force_idle()
+    logic.on_release(1000)
+
+    assert logic.on_press(2000) is Action.START
 
 
 def test_a_full_cycle_can_be_repeated():

@@ -5,6 +5,7 @@ and telling the user to press Ctrl+V would send them after nothing.
 """
 
 import contextlib
+import time
 
 import pytest
 
@@ -73,7 +74,7 @@ def test_the_text_is_pasted_and_the_old_clipboard_comes_back(clipboard):
     keyboard = FakeKeyboard()
     inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard)
 
-    assert keyboard.pressed_keys == ["v"]
+    assert keyboard.pressed_keys == [injector_module.PASTE_KEY]
     assert clipboard.writes == [TRANSCRIPT, PREVIOUS_CLIPBOARD]
     assert clipboard.content == PREVIOUS_CLIPBOARD
 
@@ -123,7 +124,7 @@ def test_an_unreadable_clipboard_does_not_stop_the_paste(clipboard, monkeypatch)
 
     inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard)
 
-    assert keyboard.pressed_keys == ["v"]
+    assert keyboard.pressed_keys == [injector_module.PASTE_KEY]
     assert clipboard.content == TRANSCRIPT  # nothing to restore, so the text stays
 
 
@@ -133,6 +134,54 @@ def test_restore_can_be_switched_off(clipboard):
 
     assert clipboard.writes == [TRANSCRIPT]
     assert clipboard.content == TRANSCRIPT
+
+
+def test_the_paste_key_is_addressed_by_virtual_key_not_by_the_letter(clipboard):
+    """Under the Georgian layout there is no Latin "v": pynput would fall back to
+    KEYEVENTF_UNICODE, Windows would deliver VK_PACKET, and Ctrl+VK_PACKET pastes nothing
+    while still reporting success — so the app would delete the recording for nothing."""
+    key = injector_module.PASTE_KEY
+    parameters = key._parameters(True)
+
+    assert parameters["wVk"] == 0x56  # VK_V, the same physical key on every layout
+    assert parameters["dwFlags"] == 0  # not 4 (KEYEVENTF_UNICODE)
+    assert key.char is None  # nothing here goes through the layout at all
+
+
+def test_the_modifier_wait_gives_up_rather_than_blocking_forever(monkeypatch):
+    """A keyboard hook can miss a key-release. Waiting for ever would hang the app and
+    lose the words; pasting with a modifier held is the lesser problem."""
+    monkeypatch.setattr(injector_module, "_modifiers_are_down", lambda: True)
+    monkeypatch.setattr(injector_module, "MODIFIER_POLL_INTERVAL_SECONDS", 0.001)
+
+    started = time.monotonic()
+    injector_module._wait_for_modifiers_released(timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+
+    assert 0.05 <= elapsed < 1.0
+
+
+def test_the_modifier_wait_returns_as_soon_as_the_keys_come_up(monkeypatch):
+    states = iter([True, True, False])
+    monkeypatch.setattr(injector_module, "_modifiers_are_down", lambda: next(states, False))
+    monkeypatch.setattr(injector_module, "MODIFIER_POLL_INTERVAL_SECONDS", 0.001)
+
+    started = time.monotonic()
+    injector_module._wait_for_modifiers_released(timeout_seconds=5.0)
+
+    assert time.monotonic() - started < 1.0  # it did not wait out the timeout
+
+
+def test_a_clipboard_that_silently_refuses_the_write_is_caught(clipboard, monkeypatch):
+    """pyperclip's Windows path can return without raising while another program holds
+    the clipboard. Believing that write would cost the user their words."""
+    monkeypatch.setattr(clipboard, "copy", lambda _text: None)  # accepts, changes nothing
+    keyboard = FakeKeyboard()
+
+    with pytest.raises(ClipboardUnavailableError, match="did not take"):
+        inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard)
+
+    assert keyboard.pressed_keys == []
 
 
 def test_a_failure_to_restore_is_not_reported_as_a_failed_paste(clipboard, monkeypatch):
@@ -150,4 +199,4 @@ def test_a_failure_to_restore_is_not_reported_as_a_failed_paste(clipboard, monke
 
     inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard)  # must not raise
 
-    assert keyboard.pressed_keys == ["v"]
+    assert keyboard.pressed_keys == [injector_module.PASTE_KEY]

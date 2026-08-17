@@ -9,5 +9,7 @@
   "clipboard_restore_delay_ms": 300,
   "language_code": "kat",
   "model_id": "scribe_v2",
-  "price_per_hour_usd": 0.22
+  "price_per_hour_usd": 0.22,
+  "keyterms": [],
+  "prune_takes_after_days": 7
 }

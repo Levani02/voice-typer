@@ -148,14 +148,23 @@ class HotkeyListener:
             logger.info("stopped listening for the hotkey")
 
     def _handle_press(self, key: object) -> None:
-        if _same_key(key, self._key):
-            self._dispatch(self._logic.on_press(time.monotonic() * 1000))
-        elif key == keyboard.Key.esc and self._logic.is_recording:
-            self._dispatch(self._logic.on_escape())
+        """Everything here is wrapped: pynput stops the listener on an uncaught exception,
+        and a dead listener looks exactly like a working one — the app sits in the tray and
+        the hotkey silently does nothing."""
+        try:
+            if _same_key(key, self._key):
+                self._dispatch(self._logic.on_press(time.monotonic() * 1000))
+            elif key == keyboard.Key.esc and self._logic.is_recording:
+                self._dispatch(self._logic.on_escape())
+        except Exception:
+            logger.exception("key press handling raised — the listener stays alive")
 
     def _handle_release(self, key: object) -> None:
-        if _same_key(key, self._key):
-            self._dispatch(self._logic.on_release(time.monotonic() * 1000))
+        try:
+            if _same_key(key, self._key):
+                self._dispatch(self._logic.on_release(time.monotonic() * 1000))
+        except Exception:
+            logger.exception("key release handling raised — the listener stays alive")
 
     def _dispatch(self, action: Action) -> None:
         """Never let a callback exception kill the listener thread."""

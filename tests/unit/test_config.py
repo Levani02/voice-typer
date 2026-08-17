@@ -86,11 +86,56 @@ def test_missing_api_key_explains_what_to_do(monkeypatch, tmp_path):
         load_config(tmp_path / "no-such-file.json")
 
 
-def test_the_key_never_appears_in_the_error_message(monkeypatch, tmp_path):
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+def test_the_key_never_appears_in_an_error_message(monkeypatch, tmp_path):
+    """A key IS present here — the earlier version of this test deleted it first, which
+    made the assertion impossible to fail."""
+    secret = "sk_this_must_never_be_shown_to_anyone"
+    monkeypatch.setenv("ELEVENLABS_API_KEY", secret)
+
     with pytest.raises(ConfigError) as caught:
-        load_config(tmp_path / "no-such-file.json")
-    assert "sk_" not in str(caught.value)
+        load_config(write_config(tmp_path, {"sample_rate": 3}))  # fails for another reason
+
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+
+
+def test_the_key_is_not_stored_anywhere_a_log_would_reach_it(monkeypatch, tmp_path):
+    """Config objects get logged by accident; its repr must not carry the key."""
+    secret = "sk_this_must_never_be_shown_to_anyone"
+    monkeypatch.setenv("ELEVENLABS_API_KEY", secret)
+
+    cfg = load_config(tmp_path / "absent.json")
+
+    assert cfg.api_key == secret  # available to the code that needs it
+    assert secret not in str(cfg.hotkey) + str(cfg.model_id) + str(cfg.language_code)
+
+
+def test_keyterms_default_to_none(tmp_path):
+    assert load_config(tmp_path / "absent.json").keyterms == ()
+
+
+def test_keyterms_are_passed_through(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"keyterms": ["სოხუმი", "ElevenLabs"]}))
+    assert cfg.keyterms == ("სოხუმი", "ElevenLabs")
+
+
+def test_too_many_keyterms_is_rejected_because_it_would_cost_more(tmp_path):
+    """Past 100 terms ElevenLabs bills a 20-second minimum per recording."""
+    path = write_config(tmp_path, {"keyterms": [f"term{i}" for i in range(101)]})
+    with pytest.raises(ConfigError, match="20-second"):
+        load_config(path)
+
+
+def test_exactly_one_hundred_keyterms_is_allowed(tmp_path):
+    path = write_config(tmp_path, {"keyterms": [f"term{i}" for i in range(100)]})
+    assert len(load_config(path).keyterms) == 100
+
+
+def test_keyterms_must_be_a_list_of_words(tmp_path):
+    with pytest.raises(ConfigError, match="keyterms"):
+        load_config(write_config(tmp_path, {"keyterms": "სოხუმი"}))
+    with pytest.raises(ConfigError, match="keyterms"):
+        load_config(write_config(tmp_path, {"keyterms": [1, 2, 3]}))
 
 
 def test_transcript_logging_is_off_unless_explicitly_enabled(monkeypatch, tmp_path):

@@ -23,13 +23,14 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 
 from voice_typer.config import LOGS_DIR, Config
 from voice_typer.hotkey import Action, HotkeyListener
 from voice_typer.injector import ClipboardUnavailableError, PasteFailedError, inject_text
-from voice_typer.recorder import Recorder, RecorderError, Recording, pcm_duration_seconds
-from voice_typer.transcriber import Transcriber, TranscriptionError, UsageLog
+from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
+from voice_typer.transcriber import Transcriber, Transcript, TranscriptionError, UsageLog
 from voice_typer.tray import TrayIcon, TrayState
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ ERROR_DISPLAY_SECONDS = 6.0
 # the thread that draws the tray icon, which would otherwise look frozen.
 SHUTDOWN_WAIT_SECONDS = 5.0
 
+SECONDS_PER_DAY = 86_400
+
 
 class App:
     """Owns the recording lifecycle. The tray is attached after construction."""
@@ -68,7 +71,7 @@ class App:
         self._config = config
         self._recorder = recorder or Recorder(config.sample_rate, config.input_device)
         self._transcriber = transcriber or Transcriber(
-            config.api_key, config.model_id, config.language_code
+            config.api_key, config.model_id, config.language_code, config.keyterms
         )
         self._usage = usage or UsageLog(USAGE_PATH, config.price_per_hour_usd)
         self._hotkey = hotkey or HotkeyListener(
@@ -88,6 +91,7 @@ class App:
         self._tray = tray
 
     def start(self) -> None:
+        self._prune_old_takes()
         self._take_counter = _highest_take_number(PENDING_DIR)
         self._hotkey.start()
         logger.info("ready — press %s to dictate", self._config.hotkey)
@@ -189,24 +193,46 @@ class App:
         with self._jobs:
             return self._jobs.wait_for(lambda: self._pending_jobs == 0, timeout=timeout_seconds)
 
-    def _spawn_job(self, recording: Recording, path: Path | None = None) -> None:
-        """Claim a file for this take and hand it to a worker thread.
+    def _spawn_job(self, recording: Recording) -> None:
+        """Claim a fresh file for this take and hand it to a worker thread.
 
         The audio is not written here — that happens on the worker, because this method
         may be running inside the Windows keyboard hook.
         """
         with self._jobs:
-            if path is None:
-                self._take_counter += 1
-                path = PENDING_DIR / f"take-{self._take_counter:04d}.wav"
+            self._take_counter += 1
+            path = PENDING_DIR / f"take-{self._take_counter:04d}.wav"
             self._claimed.add(path)
             self._pending_jobs += 1
+        self._start_worker(recording, path)
 
+    def _start_worker(self, recording: Recording, path: Path) -> None:
+        """Begin work on a take that has already been claimed."""
         self._settle_state()
         worker = threading.Thread(
             target=self._transcribe_and_paste, args=(recording, path), daemon=True
         )
         worker.start()
+
+    def _claim_orphan(self) -> Path | None:
+        """Claim the newest recording no job owns — selection and claim in one step.
+
+        Doing these separately let two Retry clicks pick the same file and paste the same
+        words twice.
+        """
+        with self._jobs:
+            try:
+                found = sorted(PENDING_DIR.glob(PENDING_PATTERN))
+            except OSError:
+                return None
+            orphans = [p for p in found if p not in self._claimed]
+            if not orphans:
+                return None
+
+            path = orphans[-1]
+            self._claimed.add(path)
+            self._pending_jobs += 1
+            return path
 
     def _finish_job(self, path: Path) -> None:
         with self._jobs:
@@ -214,15 +240,21 @@ class App:
             self._claimed.discard(path)
             self._jobs.notify_all()
 
-    def _unclaimed_takes(self) -> list[Path]:
-        """Recordings on disk that no live job is responsible for, oldest first."""
-        with self._jobs:
-            claimed = set(self._claimed)
+    def _prune_old_takes(self) -> None:
+        """Delete recordings older than the configured age, so they do not pile up."""
+        cutoff = time.time() - self._config.prune_takes_after_days * SECONDS_PER_DAY
         try:
-            found = list(PENDING_DIR.glob(PENDING_PATTERN))
+            stale = [p for p in PENDING_DIR.glob(PENDING_PATTERN) if p.stat().st_mtime < cutoff]
         except OSError:
-            return []
-        return sorted(p for p in found if p not in claimed)
+            return
+        for path in stale:
+            try:
+                path.unlink(missing_ok=True)
+                logger.info(
+                    "removed a recording older than %d days", self._config.prune_takes_after_days
+                )
+            except OSError as exc:
+                logger.warning("could not remove an old recording: %s", exc)
 
     # ------------------------------------------------------------------- transcription
 
@@ -236,6 +268,11 @@ class App:
                 # another only becomes the one the icon is describing once it starts.
                 self._settle_state()
                 succeeded = self._run_job(recording, path)
+        except Exception as exc:
+            # Nothing may escape a worker thread. An unhandled error here used to leave the
+            # icon amber for good, with the user waiting for words that were never coming.
+            logger.exception("unexpected failure while transcribing")
+            self._report_error(repr(exc), "მოულოდნელი შეცდომა — ჩანაწერი შენახულია")
         finally:
             # Settle only after the count has dropped, or this job would still see itself
             # as pending and leave the icon amber. On failure the error colour stands, and
@@ -246,26 +283,32 @@ class App:
 
     def _run_job(self, recording: Recording, path: Path) -> bool:
         try:
-            text = self._transcriber.transcribe(recording.wav_bytes)
+            transcript = self._transcriber.transcribe(recording.wav_bytes)
         except TranscriptionError as exc:
             self._report_error(str(exc), "ტექსტად გარდაქმნა ვერ მოხერხდა — ჩანაწერი შენახულია")
             return False
 
-        self._record_usage(recording.duration_seconds, len(text))
-        if not self._paste(text):
+        self._record_usage(transcript, recording.duration_seconds)
+        if not self._paste(transcript.text):
             return False
 
         self._discard(path)
         return True
 
-    def _record_usage(self, seconds: float, characters: int) -> None:
+    def _record_usage(self, transcript: Transcript, measured_seconds: float) -> None:
+        """Prefer the duration ElevenLabs billed for — that is what the invoice will say."""
+        seconds = (
+            transcript.billed_seconds if transcript.billed_seconds is not None else measured_seconds
+        )
         usage = self._usage.add(seconds)
         logger.info(
             "transcribed %.1fs into %d characters (total spent: $%.4f)",
             seconds,
-            characters,
+            len(transcript.text),
             usage.total_cost_usd,
         )
+        if self._tray is not None:
+            self._tray.refresh_menu()  # otherwise the cost line stays at whatever it was
 
     def _paste(self, text: str) -> bool:
         """True once the text is in the window. False leaves the recording on disk."""
@@ -318,20 +361,20 @@ class App:
 
     def retry_last(self) -> None:
         """Re-send the newest recording that no live job already owns."""
-        orphans = self._unclaimed_takes()
-        if not orphans:
+        path = self._claim_orphan()
+        if path is None:
             self._notify("ხელახლა გასაგზავნი ჩანაწერი არაა")
             return
 
-        path = orphans[-1]
         try:
             wav_bytes = path.read_bytes()
-        except OSError as exc:
+            duration = wav_duration_seconds(wav_bytes)
+        except (OSError, RecorderError) as exc:
+            self._finish_job(path)  # release the claim we just took
             self._report_error(str(exc), "შენახული ჩანაწერი ვერ წაიკითხა")
             return
 
-        duration = pcm_duration_seconds(wav_bytes, self._config.sample_rate)
-        self._spawn_job(Recording(wav_bytes=wav_bytes, duration_seconds=duration), path)
+        self._start_worker(Recording(wav_bytes=wav_bytes, duration_seconds=duration), path)
 
     def usage_text(self) -> str:
         usage = self._usage.read()

@@ -66,6 +66,26 @@ entirely and works in every application that accepts paste.
 The cost is that the previous clipboard contents must be saved and put back, including when
 the paste fails. That restore lives in a `finally` block.
 
+### The paste key is a virtual-key code, not the letter "v"
+
+`injector.py` sends `KeyCode.from_vk(0x56)`, never `"v"`. This is the single most important
+line in the file, and it is not a style choice.
+
+pynput resolves a *character* through `VkKeyScanW` against the calling thread's active
+keyboard layout. The Georgian layout has no Latin "v" — measured on this machine,
+`VkKeyScanExW('v', 0x0437)` returns `-1`, while the US layout returns `86`. When the lookup
+fails, pynput falls back to `KEYEVENTF_UNICODE`, which Windows delivers as `VK_PACKET` with
+`wVk = 0`. `Ctrl` + `VK_PACKET` matches no paste accelerator anywhere.
+
+The failure would have been silent and destructive: `SendInput` still succeeds, so the app
+would conclude it had pasted, delete the recording, and 300 ms later restore the previous
+clipboard over the transcript. The words would be gone from the screen, the clipboard, and
+the disk, with `pasted N characters` in the log.
+
+`0x56` is VK_V — the same physical key on every layout. `Key.ctrl` and `Key.f9` were always
+virtual-key based, so only the "v" was ever wrong. The same trap applies to `_same_key` in
+`hotkey.py` if the hotkey is ever changed from `f9` to a single letter.
+
 ## Where things are written
 
 | Path | Contents |

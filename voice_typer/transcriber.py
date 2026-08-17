@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 RETRY_DELAY_SECONDS = 1.5
 SECONDS_PER_HOUR = 3600
 
+# Above 100 key terms ElevenLabs applies a 20-second minimum billable unit per request,
+# which would cost several times more than a typical few-second dictation.
+MAX_KEYTERMS = 100
+
+
+def _billed_seconds(result: object) -> float | None:
+    """The duration ElevenLabs charged for, if the response carries one."""
+    value = getattr(result, "audio_duration_secs", None)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 class TranscriptionError(Exception):
     """The audio could not be turned into text. The message is shown to the user."""
@@ -33,6 +46,18 @@ class Usage:
     calls: int
     total_seconds: float
     total_cost_usd: float
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """What came back. `billed_seconds` is the duration ElevenLabs charged for.
+
+    That figure is preferred over the locally measured one for the cost tally, because it
+    is what the invoice will say. It is None when the response does not include it.
+    """
+
+    text: str
+    billed_seconds: float | None = None
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -101,12 +126,19 @@ class UsageLog:
 class Transcriber:
     """Sends WAV audio to Scribe v2 and returns the text."""
 
-    def __init__(self, api_key: str, model_id: str, language_code: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_id: str,
+        language_code: str,
+        keyterms: tuple[str, ...] = (),
+    ) -> None:
         self._client = ElevenLabs(api_key=api_key)
         self._model_id = model_id
         self._language_code = language_code
+        self._keyterms = keyterms
 
-    def transcribe(self, wav_bytes: bytes) -> str:
+    def transcribe(self, wav_bytes: bytes) -> Transcript:
         """Return the transcript. Retries once on a transient failure, then gives up."""
         last_error: Exception | None = None
 
@@ -128,20 +160,27 @@ class Transcriber:
         logger.error("transcription failed: %s", last_error)
         raise TranscriptionError(_explain(last_error)) from last_error
 
-    def _convert(self, wav_bytes: bytes) -> str:
+    def _convert(self, wav_bytes: bytes) -> Transcript:
         """One call to the API. The key travels in a header the SDK sets, never in the URL."""
         audio = io.BytesIO(wav_bytes)
         audio.name = "recording.wav"  # the SDK uses this for the multipart filename
 
-        result = self._client.speech_to_text.convert(
-            file=audio,
-            model_id=self._model_id,
-            language_code=self._language_code,
-            tag_audio_events=False,  # no "(laughs)" markers pasted into the user's text
-            diarize=False,  # one speaker
-        )
+        options: dict[str, object] = {
+            "file": audio,
+            "model_id": self._model_id,
+            "language_code": self._language_code,
+            "tag_audio_events": False,  # no "(laughs)" markers pasted into the user's text
+            "diarize": False,  # one speaker
+        }
+        if self._keyterms:
+            # Names and jargon the model would otherwise guess at. Kept under 100 terms
+            # deliberately: above that, ElevenLabs bills a 20-second minimum per request,
+            # which would multiply the cost of a short dictation several times over.
+            options["keyterms"] = list(self._keyterms[:MAX_KEYTERMS])
+
+        result = self._client.speech_to_text.convert(**options)
 
         text = (getattr(result, "text", "") or "").strip()
         if not text:
             raise TranscriptionError("ElevenLabs returned no text — the recording may be silent")
-        return text
+        return Transcript(text=text, billed_seconds=_billed_seconds(result))

@@ -6,6 +6,7 @@ gone only once its own text has landed, the tray describes what is happening rat
 what a thread just finished, and no two jobs ever paste over each other.
 """
 
+import os
 import threading
 import time
 
@@ -16,7 +17,7 @@ from voice_typer.app import App
 from voice_typer.config import Config
 from voice_typer.injector import ClipboardUnavailableError, PasteFailedError
 from voice_typer.recorder import Recording, build_wav
-from voice_typer.transcriber import TranscriptionError, Usage
+from voice_typer.transcriber import Transcript, TranscriptionError, Usage
 from voice_typer.tray import TrayState
 
 TRANSCRIPT = "გამარჯობა"
@@ -37,6 +38,8 @@ def make_config(**overrides) -> Config:
         "language_code": "kat",
         "model_id": "scribe_v2",
         "price_per_hour_usd": 0.22,
+        "keyterms": (),
+        "prune_takes_after_days": 7,
         "log_transcripts": False,
     }
     return Config(**{**values, **overrides})
@@ -82,15 +85,23 @@ class FakeTranscriber:
             self.gate.wait(timeout=5)
         if self.error is not None:
             raise self.error
-        return self.result
+        if isinstance(self.result, Transcript):
+            return self.result
+        return Transcript(text=self.result)
 
 
 class FakeUsage:
+    """Records what it was charged, so tests can assert the tally actually happened."""
+
+    def __init__(self):
+        self.charged: list[float] = []
+
     def add(self, seconds):
-        return Usage(calls=1, total_seconds=seconds, total_cost_usd=0.0)
+        self.charged.append(seconds)
+        return Usage(calls=len(self.charged), total_seconds=sum(self.charged), total_cost_usd=0.0)
 
     def read(self):
-        return Usage(calls=0, total_seconds=0.0, total_cost_usd=0.0)
+        return Usage(calls=len(self.charged), total_seconds=sum(self.charged), total_cost_usd=0.0)
 
 
 class FakeHotkeyLogic:
@@ -114,12 +125,16 @@ class FakeTray:
     def __init__(self):
         self.states: list[TrayState] = []
         self.messages: list[str] = []
+        self.menu_refreshes = 0
 
     def set_state(self, state):
         self.states.append(state)
 
     def notify(self, message, title=None):
         self.messages.append(message)
+
+    def refresh_menu(self):
+        self.menu_refreshes += 1
 
 
 @pytest.fixture
@@ -139,12 +154,12 @@ def pasted(monkeypatch):
     return captured
 
 
-def build_app(config=None, transcriber=None, tray=None, recorder=None):
+def build_app(config=None, transcriber=None, tray=None, recorder=None, usage=None):
     app = App(
         config or make_config(),
         recorder=recorder or FakeRecorder(),
         transcriber=transcriber or FakeTranscriber(),
-        usage=FakeUsage(),
+        usage=usage or FakeUsage(),
         hotkey=FakeHotkey(),
     )
     app.attach_tray(tray or FakeTray())
@@ -477,14 +492,117 @@ def test_the_error_icon_does_not_clear_while_a_job_is_still_running(logs, pasted
 
 
 def test_a_clip_too_short_to_be_speech_is_dropped_without_paying(logs, pasted):
+    """An accidental key tap must not become a billed API call."""
     recorder = FakeRecorder()
     recorder.stop = lambda: Recording(wav_bytes=b"", duration_seconds=0.05)
     recorder.is_recording = True
     transcriber = FakeTranscriber()
-    app = build_app(transcriber=transcriber, recorder=recorder)
+    usage = FakeUsage()
+    app = build_app(transcriber=transcriber, recorder=recorder, usage=usage)
 
     app._stop_recording()
+    # Wait for a worker in case the guard is gone — asserting straight away would race
+    # the thread and pass even with the guard removed.
+    assert app._wait_for_jobs(5)
 
     assert transcriber.calls == 0
+    assert usage.charged == []
     assert pasted == []
     assert kept_recordings() == []
+
+
+def test_a_normal_clip_is_charged_for(logs, pasted):
+    """The other half of the guard: a real dictation must reach the cost tally."""
+    usage = FakeUsage()
+    app = build_app(usage=usage)
+    run_one_job(app, audio(seconds=2.0))
+    assert usage.charged == [2.0]
+
+
+def test_the_duration_elevenlabs_billed_wins_over_the_local_measurement(logs, pasted):
+    """The invoice is written from their figure, so the tally should be too."""
+    usage = FakeUsage()
+    app = build_app(
+        transcriber=FakeTranscriber(result=Transcript(text=TRANSCRIPT, billed_seconds=3.5)),
+        usage=usage,
+    )
+    run_one_job(app, audio(seconds=2.0))
+    assert usage.charged == [3.5]
+
+
+def test_the_cost_line_in_the_menu_is_refreshed(logs, pasted):
+    """pystray reuses its menu handle, so without this the figure never changes."""
+    tray = FakeTray()
+    app = build_app(tray=tray)
+    run_one_job(app)
+    assert tray.menu_refreshes == 1
+
+
+def test_an_unexpected_failure_is_reported_instead_of_hanging(logs, pasted):
+    """Anything not caught inside the worker used to leave the icon amber forever."""
+    tray = FakeTray()
+    app = build_app(transcriber=FakeTranscriber(error=RuntimeError("something odd")), tray=tray)
+    run_one_job(app)
+
+    assert tray.states[-1] is TrayState.ERROR
+    assert tray.messages  # the user is told, rather than left waiting
+    assert len(kept_recordings()) == 1  # and the audio is still there to retry
+
+
+def test_two_retries_at_once_cannot_paste_the_same_words_twice(logs, pasted):
+    """Selection and claim happen under one lock; doing them apart allowed a double paste."""
+    app = build_app(transcriber=FakeTranscriber(error=TranscriptionError("offline")))
+    run_one_job(app)
+    assert len(kept_recordings()) == 1
+
+    app._transcriber.error = None
+    app._transcriber.calls = 0
+
+    barrier = threading.Barrier(2)
+
+    def retry():
+        barrier.wait(timeout=5)
+        app.retry_last()
+
+    threads = [threading.Thread(target=retry) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert app._wait_for_jobs(5)
+
+    assert app._transcriber.calls == 1
+    assert pasted == [TRANSCRIPT]
+
+
+def test_retry_bills_the_audio_not_the_wav_header(logs, pasted):
+    """Measuring a WAV file as raw samples counts its 44-byte header as speech."""
+    usage = FakeUsage()
+    app = build_app(
+        transcriber=FakeTranscriber(error=TranscriptionError("offline")),
+        usage=usage,
+    )
+    run_one_job(app, audio(seconds=2.0))
+
+    app._transcriber.error = None
+    app.retry_last()
+    assert app._wait_for_jobs(5)
+
+    assert usage.charged == [pytest.approx(2.0)]
+
+
+def test_old_recordings_are_pruned_at_startup(logs, pasted):
+    """Otherwise failed takes accumulate on disk forever."""
+    app_module.PENDING_DIR.mkdir(parents=True)
+    stale = app_module.PENDING_DIR / "take-0001.wav"
+    fresh = app_module.PENDING_DIR / "take-0002.wav"
+    stale.write_bytes(b"old")
+    fresh.write_bytes(b"new")
+
+    eight_days_ago = time.time() - 8 * 86_400
+    os.utime(stale, (eight_days_ago, eight_days_ago))
+
+    build_app().start()
+
+    assert not stale.exists()
+    assert fresh.exists()

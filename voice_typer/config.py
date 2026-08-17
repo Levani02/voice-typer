@@ -31,6 +31,8 @@ DEFAULTS: dict[str, object] = {
     "language_code": "kat",
     "model_id": "scribe_v2",
     "price_per_hour_usd": 0.22,
+    "keyterms": [],
+    "prune_takes_after_days": 7,
 }
 
 # name -> (minimum, maximum), inclusive. Guards against a typo turning into a bill.
@@ -41,7 +43,13 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "sample_rate": (8_000, 48_000),
     "clipboard_restore_delay_ms": (0, 5_000),
     "price_per_hour_usd": (0, 100),
+    "prune_takes_after_days": (1, 365),
 }
+
+# Above this many key terms ElevenLabs bills a 20-second minimum per request, which would
+# cost several times more than a short dictation. Rejected at startup rather than silently
+# trimmed, so the user is not billed for a setting they thought was in effect.
+MAX_KEYTERMS = 100
 
 
 class ConfigError(Exception):
@@ -64,6 +72,8 @@ class Config:
     language_code: str
     model_id: str
     price_per_hour_usd: float
+    keyterms: tuple[str, ...]
+    prune_takes_after_days: int
     log_transcripts: bool
 
 
@@ -112,6 +122,22 @@ def _validate_ranges(values: dict[str, object]) -> None:
     if device is not None and not isinstance(device, int | str):
         raise ConfigError("config.json: 'input_device' must be null, a number, or a device name")
 
+    _validate_keyterms(values["keyterms"])
+
+
+def _validate_keyterms(keyterms: object) -> None:
+    """Words the transcriber should expect — names, jargon, anything it would misspell."""
+    if not isinstance(keyterms, list) or any(not isinstance(term, str) for term in keyterms):
+        raise ConfigError(
+            "config.json: 'keyterms' must be a list of words, for example [\"სოხუმი\"]"
+        )
+    if len(keyterms) > MAX_KEYTERMS:
+        raise ConfigError(
+            f"config.json: 'keyterms' has {len(keyterms)} entries. Keep it to {MAX_KEYTERMS} — "
+            f"above that ElevenLabs charges a 20-second minimum for every recording, which "
+            f"would cost several times more per sentence."
+        )
+
 
 def _require_api_key() -> str:
     """Return the ElevenLabs key, or explain what to do about its absence.
@@ -148,5 +174,7 @@ def load_config(config_path: Path | None = None) -> Config:
         language_code=str(values["language_code"]),
         model_id=str(values["model_id"]),
         price_per_hour_usd=float(values["price_per_hour_usd"]),
+        keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
+        prune_takes_after_days=int(values["prune_takes_after_days"]),
         log_transcripts=os.environ.get("LOG_TRANSCRIPTS", "").strip().lower() == "true",
     )

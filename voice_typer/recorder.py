@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # int16
 
+# If the audio callback has not fired for this long, the device has almost certainly gone
+# away. PortAudio offers no notification for that — the callback just stops.
+STALE_AUDIO_SECONDS = 2.0
+
 
 class RecorderError(Exception):
     """The microphone could not be opened or read. The message is shown to the user."""
@@ -51,6 +55,20 @@ def pcm_duration_seconds(pcm: bytes, sample_rate: int) -> float:
     return frames / sample_rate
 
 
+def wav_duration_seconds(wav_bytes: bytes) -> float:
+    """How long a complete WAV file plays for, read from its own header.
+
+    Used when re-sending a recording from disk: measuring those bytes as raw samples would
+    count the 44-byte header as audio and bill for it, and would use the wrong sample rate
+    entirely if the setting changed between recording and retry.
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, EOFError, ZeroDivisionError) as exc:
+        raise RecorderError(f"that file is not a readable recording: {exc}") from exc
+
+
 class Recorder:
     """Owns the input stream. Exactly one capture may be in flight at a time."""
 
@@ -60,6 +78,7 @@ class Recorder:
         self._stream: sd.InputStream | None = None
         self._chunks: list[bytes] = []
         self._started_at: float | None = None
+        self._last_audio_at: float | None = None
         self._lock = threading.Lock()
 
     @property
@@ -84,6 +103,7 @@ class Recorder:
                     dtype="int16",
                     device=self._device,
                     callback=self._on_audio,
+                    finished_callback=self._on_stream_finished,
                 )
                 stream.start()
             except Exception as exc:  # sounddevice raises several unrelated types
@@ -91,6 +111,7 @@ class Recorder:
 
             self._stream = stream
             self._started_at = time.monotonic()
+            self._last_audio_at = self._started_at
             logger.info("recording started (device=%s, %d Hz)", self._device, self._sample_rate)
 
     def stop(self) -> Recording:
@@ -106,17 +127,33 @@ class Recorder:
         logger.info("recording cancelled by the user")
 
     def _close_stream(self) -> bytes:
-        """Stop and release the stream on every path, then hand back the raw samples."""
+        """Release the stream on every path, then hand back the raw samples.
+
+        `abort` rather than `stop`: stop waits for the device to drain, and on a device
+        that has been unplugged PortAudio can wait forever. Every sample has already been
+        collected by the callback, so there is nothing to drain. `ignore_errors=True` on
+        both calls means a dead device cannot raise on the way out either.
+        """
         with self._lock:
             stream, self._stream = self._stream, None
             self._started_at = None
             chunks, self._chunks = self._chunks, []
+            last_audio_at = self._last_audio_at
 
         if stream is not None:
             try:
-                stream.stop()
+                stream.abort(ignore_errors=True)
             finally:
-                stream.close()
+                stream.close(ignore_errors=True)
+
+        if last_audio_at is not None and time.monotonic() - last_audio_at > STALE_AUDIO_SECONDS:
+            # PortAudio has no device-removal notification: when a microphone disappears
+            # the callback simply stops being called. Silence in the log is the only clue.
+            logger.warning(
+                "no audio arrived for over %.1fs before stopping — the microphone may have "
+                "been unplugged or changed",
+                STALE_AUDIO_SECONDS,
+            )
 
         return b"".join(chunks)
 
@@ -125,3 +162,17 @@ class Recorder:
         if status:
             logger.warning("audio input status: %s", status)
         self._chunks.append(bytes(indata))
+        self._last_audio_at = time.monotonic()
+
+    def _on_stream_finished(self) -> None:
+        """PortAudio has abandoned the stream — usually the microphone was unplugged.
+
+        Without this, `is_recording` would stay True forever and the hotkey would appear
+        to do nothing: every press would be treated as 'already recording'.
+        """
+        with self._lock:
+            if self._stream is None:
+                return  # the ordinary path — `_close_stream` already took ownership
+            self._stream = None
+            self._started_at = None
+        logger.warning("the audio device stopped on its own — the microphone may be gone")

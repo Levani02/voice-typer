@@ -15,8 +15,9 @@ WAV_BYTES = b"RIFF....WAVEfake"
 
 
 class FakeSpeechToText:
-    def __init__(self, responses):
+    def __init__(self, responses, billed_seconds=None):
         self._responses = list(responses)
+        self._billed_seconds = billed_seconds
         self.calls = []
 
     def convert(self, **kwargs):
@@ -24,20 +25,22 @@ class FakeSpeechToText:
         outcome = self._responses.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return SimpleNamespace(text=outcome)
+        if self._billed_seconds is None:
+            return SimpleNamespace(text=outcome)
+        return SimpleNamespace(text=outcome, audio_duration_secs=self._billed_seconds)
 
 
 class FakeClient:
-    def __init__(self, responses):
-        self.speech_to_text = FakeSpeechToText(responses)
+    def __init__(self, responses, billed_seconds=None):
+        self.speech_to_text = FakeSpeechToText(responses, billed_seconds)
 
 
-def make_transcriber(monkeypatch, responses):
+def make_transcriber(monkeypatch, responses, keyterms=(), billed_seconds=None):
     """Build a Transcriber whose client is the fake, with the retry pause removed."""
-    client = FakeClient(responses)
+    client = FakeClient(responses, billed_seconds)
     monkeypatch.setattr(transcriber_module, "ElevenLabs", lambda api_key: client)
     monkeypatch.setattr(transcriber_module, "RETRY_DELAY_SECONDS", 0)
-    return Transcriber("test-key-not-real", "scribe_v2", "kat"), client
+    return Transcriber("test-key-not-real", "scribe_v2", "kat", keyterms), client
 
 
 def http_error(status: int) -> Exception:
@@ -48,7 +51,7 @@ def http_error(status: int) -> Exception:
 
 def test_returns_the_transcript(monkeypatch):
     transcriber, _ = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE])
-    assert transcriber.transcribe(WAV_BYTES) == GEORGIAN_SAMPLE
+    assert transcriber.transcribe(WAV_BYTES).text == GEORGIAN_SAMPLE
 
 
 def test_georgian_is_forced_rather_than_auto_detected(monkeypatch):
@@ -71,14 +74,14 @@ def test_audio_event_tags_are_off(monkeypatch):
 
 def test_surrounding_whitespace_is_trimmed(monkeypatch):
     transcriber, _ = make_transcriber(monkeypatch, ["  " + GEORGIAN_SAMPLE + "\n"])
-    assert transcriber.transcribe(WAV_BYTES) == GEORGIAN_SAMPLE
+    assert transcriber.transcribe(WAV_BYTES).text == GEORGIAN_SAMPLE
 
 
 def test_a_connection_failure_is_retried_once_and_can_succeed(monkeypatch):
     transcriber, client = make_transcriber(
         monkeypatch, [ConnectionError("network unreachable"), GEORGIAN_SAMPLE]
     )
-    assert transcriber.transcribe(WAV_BYTES) == GEORGIAN_SAMPLE
+    assert transcriber.transcribe(WAV_BYTES).text == GEORGIAN_SAMPLE
     assert len(client.speech_to_text.calls) == 2
 
 
@@ -93,7 +96,7 @@ def test_it_gives_up_after_the_second_failure(monkeypatch):
 
 def test_a_server_fault_is_retried(monkeypatch):
     transcriber, client = make_transcriber(monkeypatch, [http_error(503), GEORGIAN_SAMPLE])
-    assert transcriber.transcribe(WAV_BYTES) == GEORGIAN_SAMPLE
+    assert transcriber.transcribe(WAV_BYTES).text == GEORGIAN_SAMPLE
     assert len(client.speech_to_text.calls) == 2
 
 
@@ -107,7 +110,7 @@ def test_a_rejected_key_is_not_retried_and_says_so(monkeypatch):
 
 def test_rate_limiting_is_retried(monkeypatch):
     transcriber, client = make_transcriber(monkeypatch, [http_error(429), GEORGIAN_SAMPLE])
-    assert transcriber.transcribe(WAV_BYTES) == GEORGIAN_SAMPLE
+    assert transcriber.transcribe(WAV_BYTES).text == GEORGIAN_SAMPLE
     assert len(client.speech_to_text.calls) == 2
 
 
@@ -118,12 +121,61 @@ def test_an_empty_response_is_an_error_not_an_empty_paste(monkeypatch):
         transcriber.transcribe(WAV_BYTES)
 
 
-def test_the_api_key_never_reaches_the_error_message(monkeypatch):
+@pytest.mark.parametrize(
+    "failure",
+    [http_error(401), http_error(500), ConnectionError("network down")],
+    ids=["rejected-key", "server-fault", "no-network"],
+)
+def test_the_api_key_never_reaches_the_error_message(monkeypatch, failure):
+    """Every branch of the explanation, not just the 401 one — the catch-all fallback is
+    the branch most likely to carry raw SDK detail through."""
     secret = "sk_this_must_never_be_shown"
-    client = FakeClient([http_error(401), http_error(401)])
+    client = FakeClient([failure, failure])
     monkeypatch.setattr(transcriber_module, "ElevenLabs", lambda api_key: client)
     monkeypatch.setattr(transcriber_module, "RETRY_DELAY_SECONDS", 0)
 
     with pytest.raises(TranscriptionError) as caught:
         Transcriber(secret, "scribe_v2", "kat").transcribe(WAV_BYTES)
+
     assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+
+
+def test_key_terms_are_sent_when_configured(monkeypatch):
+    """The one lever available for Georgian accuracy — names the model would guess at."""
+    terms = ("სოხუმი", "ElevenLabs")
+    transcriber, client = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], keyterms=terms)
+    transcriber.transcribe(WAV_BYTES)
+
+    assert client.speech_to_text.calls[0]["keyterms"] == list(terms)
+
+
+def test_no_key_terms_parameter_is_sent_when_none_are_configured(monkeypatch):
+    transcriber, client = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE])
+    transcriber.transcribe(WAV_BYTES)
+
+    assert "keyterms" not in client.speech_to_text.calls[0]
+
+
+def test_key_terms_are_capped_before_they_reach_the_api(monkeypatch):
+    """Past 100 terms ElevenLabs bills a 20-second minimum for every recording."""
+    terms = tuple(f"term{i}" for i in range(150))
+    transcriber, client = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], keyterms=terms)
+    transcriber.transcribe(WAV_BYTES)
+
+    assert len(client.speech_to_text.calls[0]["keyterms"]) == transcriber_module.MAX_KEYTERMS
+
+
+def test_the_billed_duration_is_reported_when_the_response_carries_one(monkeypatch):
+    transcriber, _ = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], billed_seconds=4.25)
+    assert transcriber.transcribe(WAV_BYTES).billed_seconds == 4.25
+
+
+def test_a_missing_billed_duration_is_none_rather_than_a_guess(monkeypatch):
+    transcriber, _ = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE])
+    assert transcriber.transcribe(WAV_BYTES).billed_seconds is None
+
+
+def test_a_nonsense_billed_duration_is_ignored(monkeypatch):
+    transcriber, _ = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], billed_seconds="soon")
+    assert transcriber.transcribe(WAV_BYTES).billed_seconds is None
