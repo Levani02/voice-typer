@@ -1,0 +1,13 @@
+{
+  "hotkey": "f9",
+  "hold_threshold_ms": 400,
+  "max_recording_seconds": 300,
+  "min_recording_ms": 300,
+  "input_device": null,
+  "sample_rate": 16000,
+  "restore_clipboard": true,
+  "clipboard_restore_delay_ms": 300,
+  "language_code": "kat",
+  "model_id": "scribe_v2",
+  "price_per_hour_usd": 0.22
+}
