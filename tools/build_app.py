@@ -16,6 +16,7 @@ Two deliberate differences between the platforms:
 
 from __future__ import annotations
 
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,22 @@ DATA_SEPARATOR = ";" if IS_WINDOWS else ":"
 # is invisible to the dependency scanner. Named here or the built app starts and then
 # fails the moment it tries to draw an icon or open the microphone.
 HIDDEN_IMPORTS = ["pystray._win32"] if IS_WINDOWS else ["pystray._darwin"]
+
+# macOS hands the microphone to nobody who has not said why they want it. Without
+# NSMicrophoneUsageDescription in the bundle there is no permission prompt and no entry to
+# switch on in System Settings: the stream opens, every sample arrives as silence, and the
+# menu-bar recording indicator never lights. The upload then succeeds and comes back with
+# no text, so the user is told "the recording may be silent" — a long way from the cause.
+# That is exactly how the v0.1.0 build failed, and PyInstaller's default Info.plist carries
+# none of these keys.
+MACOS_USAGE_DESCRIPTIONS = {
+    "NSMicrophoneUsageDescription": (
+        "voice-typer records what you say so it can be typed out as text."
+    ),
+    # `platform_support.show_dialog` reaches the user through osascript before any window
+    # exists, and driving another application that way is a permission of its own.
+    "NSAppleEventsUsageDescription": ("voice-typer shows a system dialog when it cannot start."),
+}
 
 
 def ensure_pyinstaller() -> None:
@@ -87,6 +104,64 @@ def build_command() -> list[str]:
     return command
 
 
+def declared_usage_descriptions(bundle: Path) -> set[str]:
+    """Which of the usage strings the finished bundle actually carries.
+
+    Read back from the bundle rather than trusted, because getting this wrong is invisible
+    at build time and only shows up as a silent recording on someone else's Mac.
+    """
+    plist_path = bundle / "Contents" / "Info.plist"
+    try:
+        with plist_path.open("rb") as handle:
+            plist = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException) as exc:
+        print(f"Could not read {plist_path}: {exc}")
+        return set()
+
+    return {name for name in MACOS_USAGE_DESCRIPTIONS if plist.get(name)}
+
+
+def declare_macos_permissions(bundle: Path) -> None:
+    """Write the usage strings into the bundle, then sign it again.
+
+    The order is forced. PyInstaller signs the bundle ad-hoc as its last act, and changing
+    any file inside afterwards breaks that signature — an Apple Silicon Mac then refuses to
+    launch the app at all, which trades a silent microphone for an app that does not open.
+    So the edit has to be followed by a fresh signature.
+    """
+    plist_path = bundle / "Contents" / "Info.plist"
+    with plist_path.open("rb") as handle:
+        plist = plistlib.load(handle)
+
+    plist.update(MACOS_USAGE_DESCRIPTIONS)
+    with plist_path.open("wb") as handle:
+        plistlib.dump(plist, handle)
+
+    subprocess.run(
+        ["/usr/bin/codesign", "--force", "--sign", "-", str(bundle)],
+        check=True,
+    )
+    print("Declared the microphone in Info.plist and signed the bundle again.")
+
+
+def finish_macos_bundle(bundle: Path) -> int:
+    """Add what PyInstaller leaves out, and refuse to ship a bundle still missing it."""
+    try:
+        declare_macos_permissions(bundle)
+    except (OSError, plistlib.InvalidFileException, subprocess.CalledProcessError) as exc:
+        print(f"\nCould not declare the microphone permission: {exc}")
+        return 1
+
+    missing = set(MACOS_USAGE_DESCRIPTIONS) - declared_usage_descriptions(bundle)
+    if missing:
+        print(
+            f"\nThe bundle still does not declare: {', '.join(sorted(missing))}."
+            "\nShipping it would record silence, so the build stops here."
+        )
+        return 1
+    return 0
+
+
 def report_result() -> int:
     built = PROJECT_ROOT / "dist" / (f"{APP_NAME}.exe" if IS_WINDOWS else f"{APP_NAME}.app")
     if not built.exists():
@@ -121,6 +196,15 @@ def main() -> int:
     if result.returncode != 0:
         print("\nThe build failed. The reason is in the output above.")
         return result.returncode
+
+    if IS_MACOS:
+        bundle = PROJECT_ROOT / "dist" / f"{APP_NAME}.app"
+        if not bundle.is_dir():
+            print(f"\nThe build finished but {bundle.name} is not there. Nothing to ship.")
+            return 1
+        failed = finish_macos_bundle(bundle)
+        if failed:
+            return failed
 
     return report_result()
 
