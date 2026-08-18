@@ -279,16 +279,22 @@ def test_an_unusable_clipboard_writes_the_text_to_a_file(logs, monkeypatch):
 
 
 def test_the_two_paste_failures_give_opposite_advice(logs, monkeypatch):
-    """Telling someone to press Ctrl+V when the clipboard write failed sends them nowhere."""
+    """Naming the paste shortcut when the clipboard write failed sends the user nowhere.
+
+    The shortcut is read from the app rather than written out here: it is Ctrl+V on
+    Windows and Cmd+V on macOS, and hard-coding either one tests the wrong system.
+    """
+    shortcut = app_module.PASTE_SHORTCUT_LABEL
+
     tray = FakeTray()
     monkeypatch.setattr(app_module, "inject_text", _raiser(PasteFailedError("refused")))
     run_one_job(build_app(tray=tray))
-    assert "Ctrl+V" in tray.messages[-1]
+    assert shortcut in tray.messages[-1]
 
     tray = FakeTray()
     monkeypatch.setattr(app_module, "inject_text", _raiser(ClipboardUnavailableError("locked")))
     run_one_job(build_app(tray=tray))
-    assert "Ctrl+V" not in tray.messages[-1]
+    assert shortcut not in tray.messages[-1]
 
 
 # --------------------------------------------- overlapping takes keep their own audio

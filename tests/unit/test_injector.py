@@ -15,6 +15,7 @@ from voice_typer.injector import (
     PasteFailedError,
     inject_text,
 )
+from voice_typer.platform_support import IS_MACOS, IS_WINDOWS
 
 TRANSCRIPT = "გამარჯობა, ეს არის ტესტი"
 PREVIOUS_CLIPBOARD = "something the user had copied earlier"
@@ -136,16 +137,25 @@ def test_restore_can_be_switched_off(clipboard):
     assert clipboard.content == TRANSCRIPT
 
 
-def test_the_paste_key_is_addressed_by_virtual_key_not_by_the_letter(clipboard):
-    """Under the Georgian layout there is no Latin "v": pynput would fall back to
-    KEYEVENTF_UNICODE, Windows would deliver VK_PACKET, and Ctrl+VK_PACKET pastes nothing
-    while still reporting success — so the app would delete the recording for nothing."""
+def test_the_paste_key_is_addressed_by_key_code_not_by_the_letter(clipboard):
+    """Under the Georgian layout there is no Latin "v": asked for the character, pynput
+    falls back to a unicode event, Windows delivers VK_PACKET, and Ctrl+VK_PACKET pastes
+    nothing while still reporting success — so the app would delete the recording for
+    nothing. A hardware key code means the same physical key on every layout."""
     key = injector_module.PASTE_KEY
-    parameters = key._parameters(True)
+    expected = injector_module._MACOS_VK_V if IS_MACOS else injector_module._WINDOWS_VK_V
 
-    assert parameters["wVk"] == 0x56  # VK_V, the same physical key on every layout
-    assert parameters["dwFlags"] == 0  # not 4 (KEYEVENTF_UNICODE)
+    assert key.vk == expected
     assert key.char is None  # nothing here goes through the layout at all
+
+
+@pytest.mark.skipif(not IS_WINDOWS, reason="the flags are a Windows SendInput detail")
+def test_the_windows_paste_key_carries_no_unicode_flag(clipboard):
+    """The failure this guards against is specifically KEYEVENTF_UNICODE being used."""
+    parameters = injector_module.PASTE_KEY._parameters(True)
+
+    assert parameters["wVk"] == 0x56  # VK_V
+    assert parameters["dwFlags"] == 0  # not 4 (KEYEVENTF_UNICODE)
 
 
 def test_focus_is_handed_back_when_our_own_window_has_it(clipboard, monkeypatch):
