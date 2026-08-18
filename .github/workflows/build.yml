@@ -1,0 +1,106 @@
+name: Build
+
+# Builds the standalone application for both systems.
+#
+# The macOS half is not a convenience: there is no Mac on the machine this project is
+# written on, so GitHub's runner is the only place a .app can be produced or proven to
+# start at all.
+#
+# Run it by hand from the Actions tab, or push a tag like v1.0.0 to build and publish
+# a release with both files attached.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to attach the built files to a release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false # one system failing must not hide the other one's result
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            built: dist/voice-typer.exe
+          - os: macos-latest
+            name: macos
+            built: dist/voice-typer-macos.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build
+        run: python tools/build_app.py
+
+      - name: Pack the macOS bundle
+        if: runner.os == 'macOS'
+        # ditto rather than zip: a .app is a folder of symlinks and executable bits, and
+        # a plain zip loses both — the downloaded app then refuses to open.
+        run: ditto -c -k --keepParent dist/voice-typer.app dist/voice-typer-macos.zip
+
+      - name: Check that the built app starts
+        if: runner.os == 'macOS'
+        # No display and no accessibility permission on a runner, so it cannot get far —
+        # but it must get as far as writing its log. A bundle that dies before that is
+        # broken in a way only this job can catch.
+        run: |
+          ./dist/voice-typer.app/Contents/MacOS/voice-typer &
+          app_pid=$!
+          sleep 25
+          kill "$app_pid" 2>/dev/null || true
+          LOG="$HOME/Library/Application Support/voice-typer/logs/voice_typer.log"
+          if [ -f "$LOG" ]; then
+            echo "The app got far enough to write its log:"
+            cat "$LOG"
+          else
+            echo "No log was written — the bundle did not reach its own startup code."
+            exit 1
+          fi
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-typer-${{ matrix.name }}
+          path: ${{ matrix.built }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "voice-typer ${{ github.ref_name }}" \
+            --generate-notes \
+            downloaded/voice-typer-windows/voice-typer.exe \
+            downloaded/voice-typer-macos/voice-typer-macos.zip

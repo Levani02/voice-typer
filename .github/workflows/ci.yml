@@ -11,9 +11,15 @@ permissions:
 
 jobs:
   check:
-    # Windows, because this is a Windows desktop app — pynput and sounddevice
-    # need a real Windows environment to import at all.
-    runs-on: windows-latest
+    # Both systems the app claims to support. macOS is here because it is the only place
+    # the Mac half of the code can be run at all — there is no Mac on the machine this is
+    # developed on, so without this job "it works on macOS" would be a guess.
+    strategy:
+      fail-fast: false # a failure on one system must not hide the other one's result
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -31,14 +37,19 @@ jobs:
           pip install ruff pytest
 
       - name: Lint
+        # Once only. The same files produce the same answer on either system, and two
+        # copies of every complaint make the real failure harder to find.
+        if: runner.os == 'Windows'
         run: ruff check .
 
       - name: Format check
+        if: runner.os == 'Windows'
         run: ruff format --check .
 
       - name: Tests
         # No microphone and no clipboard on a CI runner — the suite covers pure
         # logic only, and the ElevenLabs client is mocked, so nothing is spent.
+        # The window tests skip themselves where there is no desktop session.
         env:
           ELEVENLABS_API_KEY: test-key-not-real
         run: pytest -q

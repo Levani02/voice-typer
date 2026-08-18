@@ -211,8 +211,7 @@ def _require_api_key() -> str:
 
     where = f".env exists but {API_KEY_SETTING} is empty" if ENV_PATH.exists() else ".env not found"
     raise MissingApiKeyError(
-        f"No ElevenLabs API key ({where}). Get one at "
-        f"https://elevenlabs.io/app/settings/api-keys"
+        f"No ElevenLabs API key ({where}). Get one at https://elevenlabs.io/app/settings/api-keys"
     )
 
 
