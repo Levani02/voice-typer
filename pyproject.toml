@@ -14,3 +14,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Without this, only `python -m pytest` works: that form puts the current directory on
+# the import path, while a bare `pytest` does not — so every test importing voice_typer
+# failed on CI while passing on the developer's machine.
+pythonpath = ["."]
