@@ -6,17 +6,43 @@ with a sentence the user can act on, rather than half-way through a recording.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+def _project_root() -> Path:
+    """Where the settings, the key and the logs live.
+
+    Three different answers, for three different situations:
+
+    * **From source** — the repository, so everything sits beside the code being edited.
+    * **A packaged Windows build** — next to the .exe, which keeps it portable: copy the
+      folder to another machine and the settings go with it.
+    * **A packaged macOS build** — under Application Support. A .app bundle is meant to be
+      read-only, is replaced wholesale on every update, and may be launched from a
+      read-only disk image, so writing inside it would lose the key sooner or later.
+    """
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parent.parent
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "voice-typer"
+    return Path(sys.executable).resolve().parent
+
+
+PROJECT_ROOT = _project_root()
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 ENV_PATH = PROJECT_ROOT / ".env"
 LOGS_DIR = PROJECT_ROOT / "logs"
+
+# The one setting the user has to supply. Named once so that no line in this repository
+# ever holds the name and a value together — that shape is what a leaked key looks like.
+API_KEY_SETTING = "ELEVENLABS_API_KEY"
 
 # Every setting the user may change, with the value used when config.json omits it.
 DEFAULTS: dict[str, object] = {
@@ -62,6 +88,15 @@ MAX_KEYTERMS = 100
 
 class ConfigError(Exception):
     """A setting is missing or unusable. The message is shown to the user verbatim."""
+
+
+class MissingApiKeyError(ConfigError):
+    """No key yet — the one failure the app can fix by asking, instead of giving up.
+
+    Kept apart from every other ConfigError because the response is different: a bad
+    hotkey name is a mistake to report, while a missing key on a first run is simply the
+    question that has not been asked yet.
+    """
 
 
 @dataclass(frozen=True)
@@ -170,15 +205,81 @@ def _require_api_key() -> str:
 
     The value itself is never logged, printed, or included in an exception message.
     """
-    key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    key = (os.environ.get(API_KEY_SETTING) or "").strip()
     if key:
         return key
 
-    where = ".env exists but ELEVENLABS_API_KEY is empty" if ENV_PATH.exists() else ".env not found"
-    raise ConfigError(
-        f"No ElevenLabs API key ({where}). Copy .env.example to .env and paste your key "
-        f"into it — get one at https://elevenlabs.io/app/settings/api-keys"
+    where = f".env exists but {API_KEY_SETTING} is empty" if ENV_PATH.exists() else ".env not found"
+    raise MissingApiKeyError(
+        f"No ElevenLabs API key ({where}). Get one at "
+        f"https://elevenlabs.io/app/settings/api-keys"
     )
+
+
+# What a fresh .env starts as, when the app has to create one itself. Deliberately not
+# read from .env.example: a packaged executable ships without the repository around it.
+ENV_HEADER = (
+    "# voice-typer — private settings. Never share this file and never commit it.",
+    "",
+)
+
+
+def _env_lines_with_key(existing: list[str], key: str) -> list[str]:
+    """The file's lines with the key line replaced, or added if it was not there."""
+    prefix = f"{API_KEY_SETTING}="
+    updated = [prefix + key if line.strip().startswith(prefix) else line for line in existing]
+    if not any(line.startswith(prefix) for line in updated):
+        updated.append(prefix + key)
+    return updated
+
+
+def _bundled_config() -> Path | None:
+    """The copy of config.json carried inside a packaged executable, if there is one."""
+    root = getattr(sys, "_MEIPASS", None)
+    if not root:
+        return None
+    candidate = Path(root) / "config.json"
+    return candidate if candidate.is_file() else None
+
+
+def ensure_settings_file() -> None:
+    """Put a settings file where the user can find it, on a packaged build's first run.
+
+    Running from source it is already there. A packaged build carries its copy in a folder
+    that is deleted when the app exits, so it is written out beside the executable once —
+    otherwise "Settings" in the menu would open a file that vanishes.
+    """
+    if CONFIG_PATH.exists():
+        return
+    bundled = _bundled_config()
+    if bundled is None:
+        return
+    with contextlib.suppress(OSError):
+        CONFIG_PATH.write_bytes(bundled.read_bytes())
+
+
+def save_api_key(key: str) -> None:
+    """Put the user's key into .env and make it live in this process straight away.
+
+    Called from the first-run window. Every other part of the app reads the key through
+    the environment, so setting it here means the app carries on without a restart.
+
+    The value is never logged and never included in an error message.
+    """
+    key = key.strip()
+    if not key:
+        raise ConfigError("The key is empty.")
+
+    if ENV_PATH.exists():
+        existing = ENV_PATH.read_text(encoding="utf-8").splitlines()
+    else:
+        existing = list(ENV_HEADER)
+
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ENV_PATH.write_text("\n".join(_env_lines_with_key(existing, key)) + "\n", encoding="utf-8")
+    with contextlib.suppress(OSError):
+        ENV_PATH.chmod(0o600)  # no effect on Windows, correct everywhere else
+    os.environ[API_KEY_SETTING] = key
 
 
 def load_config(config_path: Path | None = None) -> Config:

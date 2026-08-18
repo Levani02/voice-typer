@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 import tkinter as tk
 
+from voice_typer.platform_support import IS_MACOS
+
 Colour = str
 Rgb = tuple[int, int, int]
 
@@ -51,9 +53,11 @@ POWER_INK: Colour = "#f08787"
 DISABLED_INK: Colour = "#4e565a"
 
 # Georgian needs a font that actually has the Mkhedruli block. Segoe UI has carried it
-# since Windows 10 1903.
-UI_FAMILY = "Segoe UI"
-MONO_FAMILY = "Consolas"
+# since Windows 10 1903. macOS has no Segoe UI, and asking for a font that is not there
+# lands on Tk's own default rather than anything chosen — so each system names its own.
+# CoreText substitutes per glyph, so Georgian runs resolve even inside a Latin family.
+UI_FAMILY = "Helvetica Neue" if IS_MACOS else "Segoe UI"
+MONO_FAMILY = "Menlo" if IS_MACOS else "Consolas"
 
 # Heights in pixels at 100% display scaling. `overlay.py` multiplies these by the real
 # scaling factor and passes them to Tk as negative sizes, which means pixels rather than

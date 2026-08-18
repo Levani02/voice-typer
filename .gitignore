@@ -52,3 +52,6 @@ desktop.ini
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# PyInstaller writes this next to the project on every build
+voice-typer.spec

@@ -7,7 +7,7 @@ looking for it.
 The window is frameless, always on top, and draggable. Four things about it are
 load-bearing rather than cosmetic:
 
-* **It never takes focus.** `WS_EX_NOACTIVATE` is set on the real window handle, so
+* **It never takes focus.** `window_platform` marks the real window non-activating, so
   clicking a button here does not move focus away from whatever the user was typing into.
   Even so, Windows can still shift focus on a click, which is why `app.py` remembers the
   window the user was working in and `injector.py` hands focus back before pasting.
@@ -24,7 +24,6 @@ load-bearing rather than cosmetic:
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import json
 import logging
 import os
@@ -44,6 +43,9 @@ def _point_tcl_at_the_base_installation() -> None:
     from `sys.prefix` looks for `lib/tcl8.6` — while the real Python installs it under
     `tcl/tcl8.6`. The result is `TclError: Can't find a usable init.tcl` the moment a
     window is created, which under pythonw.exe means the app dies with no message at all.
+
+    macOS keeps Tcl where tkinter expects it, so the directory this looks for is absent
+    and the function does nothing there.
     """
     tcl_root = Path(sys.base_prefix) / "tcl"
     if not tcl_root.is_dir():
@@ -62,6 +64,8 @@ _point_tcl_at_the_base_installation()
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
 from voice_typer import widget_theme as theme  # noqa: E402
+from voice_typer import window_platform  # noqa: E402
+from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
 
 REFRESH_MS = 70  # fast enough for the level bars to look alive
 
@@ -88,17 +92,6 @@ BAR_MIN_HEIGHT = 1
 # precisely where someone dictating is looking.
 EDGE_MARGIN = 24
 TASKBAR_ALLOWANCE = 72
-
-STANDARD_DPI = 96.0
-GWL_EXSTYLE = -20
-WS_EX_NOACTIVATE = 0x08000000
-WS_EX_TOOLWINDOW = 0x00000080
-HWND_TOPMOST = -1
-SWP_NOSIZE = 0x0001
-SWP_NOMOVE = 0x0002
-SWP_NOACTIVATE = 0x0010
-SWP_FRAMECHANGED = 0x0020
-SWP_SHOWWINDOW = 0x0040
 
 RED = "#f06868"
 AMBER = "#e9a75f"
@@ -176,66 +169,6 @@ class Button:
         return x0 <= x <= x1 and y0 <= y <= y1
 
 
-def display_scale() -> float:
-    """How much larger than 100% the display is set to run.
-
-    Read from Windows rather than from Tk: with the process DPI-aware, this is the number
-    the desktop is actually using, and it is what keeps the window the same physical size
-    while drawing it at full resolution.
-    """
-    try:
-        dpi = ctypes.windll.user32.GetDpiForSystem()
-    except Exception:
-        try:
-            device = ctypes.windll.user32.GetDC(0)
-            dpi = ctypes.windll.gdi32.GetDeviceCaps(device, 88)  # LOGPIXELSX
-            ctypes.windll.user32.ReleaseDC(0, device)
-        except Exception:
-            return 1.0
-    return max(1.0, dpi / STANDARD_DPI) if dpi else 1.0
-
-
-def _toplevel_handle(window: tk.Misc) -> int:
-    """The window Windows actually manages, not Tk's inner child.
-
-    `winfo_id()` returns a WS_CHILD window. WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW are
-    top-level styles and do nothing on a child, so setting them there looked correct and
-    achieved nothing: every click on the card still took the foreground, which is why the
-    focus had to be handed back afterwards. `wm_frame()` is the real one.
-    """
-    try:
-        return int(window.wm_frame(), 16)
-    except Exception:
-        return window.winfo_id()
-
-
-def _make_non_activating(window: tk.Misc) -> None:
-    """Stop the window from becoming the foreground window.
-
-    Windows caches a window's frame, so the style change only takes effect once
-    SetWindowPos is told the frame changed — and the same call puts the window on top.
-    """
-    try:
-        handle = _toplevel_handle(window)
-        user32 = ctypes.windll.user32
-        get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
-        set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
-
-        style = get_long(handle, GWL_EXSTYLE)
-        set_long(handle, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-        user32.SetWindowPos(
-            handle,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-        )
-    except Exception as exc:
-        logger.warning("could not make the window non-activating: %s", exc)
-
-
 def _format_elapsed(seconds: float) -> str:
     whole = int(max(0.0, seconds))
     return f"{whole // 60}:{whole % 60:02d}"
@@ -264,7 +197,7 @@ class OverlayWindow:
         # The display's own scaling, then the user's preference on top of it. Both go
         # through the same multiplier, so a smaller window is drawn small rather than
         # drawn large and shrunk — which is what would make it soft again.
-        self._scale = display_scale() * window_scale
+        self._scale = window_platform.display_scale() * window_scale
         # Text and icons carry a second factor. Halving the card also halved the writing,
         # which is legible but harder to read at a glance than it needs to be — and a
         # status display is meant to be read at a glance. Positions still come from
@@ -280,14 +213,14 @@ class OverlayWindow:
             width=self._s(WINDOW_WIDTH),
             height=self._s(WINDOW_HEIGHT),
             highlightthickness=0,
-            bg=theme.TRANSPARENT_KEY,
+            bg=self._backdrop,
         )
         self._canvas.pack(fill="both", expand=True)
         self._paint_card()
         self._build_menu()
         self._bind_events()
         self._root.update()
-        _make_non_activating(self._root)
+        window_platform.make_non_activating(self._root)
         self._refresh()
 
     # ------------------------------------------------------------------------ measuring
@@ -314,15 +247,18 @@ class OverlayWindow:
         self._root.title("voice-typer")
         self._root.overrideredirect(True)
         self._root.attributes("-topmost", True)
-        self._root.configure(bg=theme.TRANSPARENT_KEY)
         # Tk sizes point-based fonts from this; keeping it honest stops any widget that
         # does use points from disagreeing with the canvas.
         with contextlib.suppress(tk.TclError):
             self._root.tk.call("tk", "scaling", self._scale * STANDARD_DPI / 72.0)
-        # Everything painted in the key colour becomes see-through, which is what gives
-        # the card real rounded corners instead of a black box behind them.
-        with contextlib.suppress(tk.TclError):
-            self._root.attributes("-transparentcolor", theme.TRANSPARENT_KEY)
+        # Whatever is painted outside the card has to disappear, which is what gives the
+        # card real rounded corners instead of a black box behind them. Each system does
+        # that differently, and one of them may refuse — so the colour to paint with is
+        # whatever came back, not a constant.
+        self._backdrop = window_platform.apply_transparency(
+            self._root, theme.TRANSPARENT_KEY, theme.CARD_TOP
+        )
+        self._root.configure(bg=self._backdrop)
         x, y = self._restore_position()
         self._saved_position = (x, y)
         self._root.geometry(f"{self._s(WINDOW_WIDTH)}x{self._s(WINDOW_HEIGHT)}+{x}+{y}")
@@ -728,18 +664,12 @@ class OverlayWindow:
         """The whole desktop, not just the primary screen.
 
         `winfo_screenwidth` reports only the primary display, so a window the user had
-        parked on a second monitor was always judged off-screen and dragged back.
+        parked on a second monitor was always judged off-screen and dragged back. Where
+        the system will not give the full extent, the primary screen is the honest answer.
         """
-        try:
-            user32 = ctypes.windll.user32
-            left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
-            top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
-            width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
-            height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
-            if width and height:
-                return left, top, left + width, top + height
-        except Exception as exc:
-            logger.warning("could not measure the desktop, using the primary screen: %s", exc)
+        bounds = window_platform.desktop_bounds()
+        if bounds is not None:
+            return bounds
         return 0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight()
 
     def _restore_position(self) -> tuple[int, int]:

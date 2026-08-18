@@ -20,22 +20,23 @@ Three rules hold everywhere below, because breaking any of them loses the user's
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from voice_typer.config import LOGS_DIR, Config
+from voice_typer.config import CONFIG_PATH, LOGS_DIR, Config
 from voice_typer.hotkey import Action, HotkeyListener
 from voice_typer.injector import (
+    PASTE_SHORTCUT_LABEL,
     ClipboardUnavailableError,
     PasteFailedError,
     foreground_window,
     inject_text,
     is_our_window,
 )
+from voice_typer.platform_support import open_path
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
 from voice_typer.transcriber import Transcriber, Transcript, TranscriptionError, UsageLog
 from voice_typer.tray import TrayIcon, TrayState
@@ -47,7 +48,6 @@ PENDING_PATTERN = "take-*.wav"
 PENDING_NUMBER = re.compile(r"take-(\d+)\.wav$")
 LAST_TRANSCRIPT_PATH = LOGS_DIR / "last_transcript.txt"
 USAGE_PATH = LOGS_DIR / "usage.json"
-CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
 
 # How long the icon stays dark red before returning to grey. Long enough to notice,
 # short enough that the app does not look permanently broken.
@@ -456,7 +456,7 @@ class App:
                 target_window=self._target_window,
             )
         except PasteFailedError as exc:
-            self._report_error(str(exc), "ტექსტი clipboard-შია — დააჭირე Ctrl+V")
+            self._report_error(str(exc), f"ტექსტი clipboard-შია — დააჭირე {PASTE_SHORTCUT_LABEL}")
             return False
         except ClipboardUnavailableError as exc:
             self._save_transcript(text)
@@ -516,10 +516,10 @@ class App:
 
     def open_logs(self) -> None:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        os.startfile(LOGS_DIR)  # a fixed path, never taken from config
+        open_path(LOGS_DIR)  # a fixed path, never taken from config
 
     def open_settings(self) -> None:
-        os.startfile(CONFIG_FILE)  # a fixed path, never taken from config
+        open_path(CONFIG_PATH)  # a fixed path, never taken from config
 
     # ------------------------------------------------------------------------- helpers
 

@@ -1,8 +1,8 @@
 """Puts the transcript into whatever window has focus.
 
-The text goes via the clipboard and Ctrl+V rather than synthesised keystrokes: Georgian
-characters cannot be typed reliably that way, because the result depends on the active
-keyboard layout. Paste bypasses layout entirely.
+The text goes via the clipboard and the system's paste shortcut rather than synthesised
+keystrokes: Georgian characters cannot be typed reliably that way, because the result
+depends on the active keyboard layout. Paste bypasses layout entirely.
 
 Whatever the user had copied before is saved and put back afterwards, including when the
 paste itself fails.
@@ -10,31 +10,45 @@ paste itself fails.
 
 from __future__ import annotations
 
-import ctypes
 import logging
 import time
 
 import pyperclip
 from pynput.keyboard import Controller, Key, KeyCode
 
+from voice_typer.platform_support import IS_MACOS, IS_WINDOWS
+
 logger = logging.getLogger(__name__)
 
-# The paste key, addressed by virtual-key code rather than by the character "v".
+# The paste key, addressed by its hardware key code rather than by the character "v".
 #
-# This is not a nicety. pynput resolves a character through VkKeyScanW against the calling
-# thread's active keyboard layout — and the Georgian layout has no Latin "v", so the lookup
-# fails and pynput falls back to KEYEVENTF_UNICODE, which Windows delivers as VK_PACKET
-# with wVk = 0. Ctrl + VK_PACKET matches no paste accelerator, yet SendInput still reports
-# success, so the app would believe it had pasted, delete the recording, and restore the
-# old clipboard over the transcript. Measured on this machine:
+# This is not a nicety. Asked for a character, pynput looks it up in the active keyboard
+# layout — and the Georgian layout has no Latin "v". On Windows the lookup fails and
+# pynput falls back to KEYEVENTF_UNICODE, which arrives as VK_PACKET with wVk = 0.
+# Ctrl + VK_PACKET matches no paste accelerator, yet SendInput still reports success, so
+# the app would believe it had pasted, delete the recording, and restore the old clipboard
+# over the transcript. Measured on this machine:
 # VkKeyScanExW('v', layout 0x0437) = -1, while layout 0x0409 gives 86.
 #
-# 0x56 is VK_V, which means the same physical key on every layout.
-PASTE_KEY = KeyCode.from_vk(0x56)
+# A key code means the same physical key whatever the layout says is printed on it:
+# 0x56 is VK_V on Windows, 0x09 is kVK_ANSI_V on macOS.
+_WINDOWS_VK_V = 0x56
+_MACOS_VK_V = 0x09
 
-# Virtual-key codes for the modifiers that would corrupt a synthetic Ctrl+V if still held.
+PASTE_KEY = KeyCode.from_vk(_MACOS_VK_V if IS_MACOS else _WINDOWS_VK_V)
+
+# macOS pastes with Command, everything else with Control.
+PASTE_MODIFIER = Key.cmd if IS_MACOS else Key.ctrl
+
+# What to call that shortcut when telling the user to press it themselves.
+PASTE_SHORTCUT_LABEL = "Cmd+V" if IS_MACOS else "Ctrl+V"
+
+# Virtual-key codes for the modifiers that would corrupt a synthetic paste if still held.
 _MODIFIER_VK_CODES = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # shift, ctrl, alt, left win, right win
 _KEY_DOWN_MASK = 0x8000
+
+# The same modifiers as a macOS event-flags mask: shift, control, option, command.
+_MACOS_MODIFIER_FLAGS = 0x20000 | 0x40000 | 0x80000 | 0x100000
 
 MODIFIER_WAIT_TIMEOUT_SECONDS = 1.0
 MODIFIER_POLL_INTERVAL_SECONDS = 0.02
@@ -44,7 +58,18 @@ FOCUS_SETTLE_SECONDS = 0.06
 
 
 def foreground_window() -> int:
-    """Whichever window is in front right now."""
+    """Whichever window is in front right now, or 0 where that cannot be asked.
+
+    macOS gives no window handle to a process that does not own the window, and hands out
+    no equivalent without the screen-recording permission. It returns 0, which switches
+    the focus hand-back below off entirely — see `_return_focus_to` for why that is safe
+    there and not on Windows.
+    """
+    if not IS_WINDOWS:
+        return 0
+
+    import ctypes
+
     try:
         return int(ctypes.windll.user32.GetForegroundWindow())
     except Exception as exc:
@@ -54,8 +79,11 @@ def foreground_window() -> int:
 
 def is_our_window(handle: int) -> bool:
     """Does this window belong to this process — that is, is it the app's own window?"""
-    if not handle:
+    if not handle or not IS_WINDOWS:
         return False
+
+    import ctypes
+
     try:
         user32 = ctypes.windll.user32
         process_id = ctypes.c_ulong()
@@ -72,6 +100,8 @@ def _restore_foreground(handle: int) -> None:
     request is refused we attach our input queue to the target window's thread, which
     makes the two count as one for the purposes of that rule, and try once more.
     """
+    import ctypes
+
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
     if user32.SetForegroundWindow(handle):
@@ -124,10 +154,36 @@ class PasteFailedError(InjectionError):
     """The text is sitting on the clipboard; only the keystroke was refused."""
 
 
-def _modifiers_are_down() -> bool:
-    """True while any modifier key is physically held."""
+def _windows_modifiers_are_down() -> bool:
+    import ctypes
+
     get_state = ctypes.windll.user32.GetAsyncKeyState  # type: ignore[attr-defined]
     return any(get_state(vk) & _KEY_DOWN_MASK for vk in _MODIFIER_VK_CODES)
+
+
+def _macos_modifiers_are_down() -> bool:
+    """Quartz reports the modifier flags the hardware is holding right now.
+
+    pynput already brings Quartz in on macOS, so this costs no extra dependency. If the
+    import ever fails the paste goes ahead unguarded, which is the same outcome as the
+    timeout below.
+    """
+    import Quartz
+
+    flags = Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState)
+    return bool(flags & _MACOS_MODIFIER_FLAGS)
+
+
+def _modifiers_are_down() -> bool:
+    """True while any modifier key is physically held."""
+    try:
+        if IS_WINDOWS:
+            return _windows_modifiers_are_down()
+        if IS_MACOS:
+            return _macos_modifiers_are_down()
+    except Exception as exc:
+        logger.debug("could not read the modifier keys: %s", exc)
+    return False
 
 
 def _wait_for_modifiers_released(timeout_seconds: float = MODIFIER_WAIT_TIMEOUT_SECONDS) -> None:
@@ -179,7 +235,7 @@ def _write_clipboard(text: str) -> None:
 
 def _send_paste(keyboard: Controller) -> None:
     try:
-        with keyboard.pressed(Key.ctrl):
+        with keyboard.pressed(PASTE_MODIFIER):
             keyboard.press(PASTE_KEY)
             keyboard.release(PASTE_KEY)
     except Exception as exc:
