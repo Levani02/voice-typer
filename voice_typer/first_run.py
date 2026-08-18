@@ -17,6 +17,7 @@ import webbrowser
 
 from voice_typer import widget_theme as theme
 from voice_typer.config import ConfigError, save_api_key
+from voice_typer.desktop_shortcut import create_desktop_shortcut
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ KEY_PAGE_URL = "https://elevenlabs.io/app/settings/api-keys"
 
 WINDOW_WIDTH = 540
 # Tall enough for the buttons to sit inside the window rather than under its edge.
-WINDOW_HEIGHT = 400
+WINDOW_HEIGHT = 440
 PAD = 26
 
 TITLE_TEXT = "voice-typer — პირველი გაშვება"
@@ -35,6 +36,7 @@ EXPLANATION_TEXT = (
 )
 EMPTY_KEY_MESSAGE = "ველი ცარიელია — ჩასვი გასაღები და თავიდან სცადე."
 SAVE_FAILED_MESSAGE = "გასაღები ვერ შეინახა: {reason}"
+SHORTCUT_TEXT = "დესკტოპზე ხატულის დადება"
 
 
 class FirstRunWindow:
@@ -56,6 +58,7 @@ class FirstRunWindow:
 
         self._add_heading()
         self._add_key_row()
+        self._add_shortcut_choice()
         self._add_buttons()
 
         self._root.bind("<Return>", lambda _event: self._save())
@@ -148,6 +151,28 @@ class FirstRunWindow:
         )
         self._message.pack(anchor="w", padx=PAD, pady=(8, 0))
 
+    def _add_shortcut_choice(self) -> None:
+        """Offered rather than done silently.
+
+        A downloaded executable sits in whatever folder the browser chose, so without an
+        icon the second run means remembering where that was. Putting one there uninvited
+        is still somebody else's desktop, so it is a choice — just one that starts ticked.
+        """
+        self._wants_shortcut = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            self._root,
+            text=SHORTCUT_TEXT,
+            variable=self._wants_shortcut,
+            bg=theme.CARD_TOP,
+            fg=theme.TEXT_MUTED,
+            activebackground=theme.CARD_TOP,
+            activeforeground=theme.TEXT_BRIGHT,
+            selectcolor="#1a1d20",
+            highlightthickness=0,
+            borderwidth=0,
+            font=(theme.UI_FAMILY, 10),
+        ).pack(anchor="w", padx=PAD - 2, pady=(14, 0))
+
     def _add_buttons(self) -> None:
         row = tk.Frame(self._root, bg=theme.CARD_TOP)
         row.pack(fill="x", padx=PAD, pady=(14, PAD), side="bottom")
@@ -201,6 +226,10 @@ class FirstRunWindow:
             logger.error("could not save the key: %s", type(exc).__name__)
             self._message.config(text=SAVE_FAILED_MESSAGE.format(reason=exc))
             return
+
+        if self._wants_shortcut.get():
+            where = create_desktop_shortcut()
+            logger.info("desktop shortcut: %s", where or "not created")
 
         self._saved = True
         self._root.destroy()

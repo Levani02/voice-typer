@@ -217,6 +217,13 @@ exec ./.venv/bin/python main.py
 LAUNCHER_EOF
     chmod +x "$LAUNCHER"
     ok "Created run.command — double-click it to start the app"
+
+    # A symlink on the Desktop, so starting the app does not mean finding this folder
+    # again. Finder opens it exactly as if it were the launcher itself.
+    if [ -d "$HOME/Desktop" ]; then
+        ln -sf "$LAUNCHER" "$HOME/Desktop/voice-typer.command"
+        ok "Put a voice-typer icon on your desktop"
+    fi
 fi
 
 # ----------------------------------------------------------------------------- finish
