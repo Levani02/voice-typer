@@ -89,6 +89,22 @@ the disk, with `pasted N characters` in the log.
 virtual-key based, so only the "v" was ever wrong. The same trap applies to `_same_key` in
 `hotkey.py` if the hotkey is ever changed from `f9` to a single letter.
 
+### On macOS the events are posted to Quartz, and pynput is not involved
+
+Creating `pynput.keyboard.Controller` asks Carbon for the current keyboard layout, and on
+macOS 15 that call asserts it is on the main queue. The paste runs on a worker thread, so
+the assertion failed and took the whole process down with `SIGTRAP` — every transcript,
+without exception. `injector.py` therefore posts Command down, `v` down, `v` up, Command
+up itself through `CGEventPost`, which is thread-safe and consults no layout.
+
+Before posting, `AXIsProcessTrusted()` is checked. Without Accessibility permission macOS
+accepts the event and delivers it nowhere, and believing that success would restore the
+old clipboard over the transcript and delete the recording. A missing permission is
+reported as a refused keystroke instead, which leaves the text on the clipboard.
+
+The full reasoning, and the alternatives that were rejected, are in
+[decisions/004-macos-paste-via-quartz.md](decisions/004-macos-paste-via-quartz.md).
+
 ## The window is drawn, not laid out
 
 Tk offers no gradients, no rounded corners, no shadows and no alpha, and the design has
@@ -162,7 +178,7 @@ They need opposite advice, so they are separate exception types:
 | Failure | What is true | What the user is told |
 | --- | --- | --- |
 | the clipboard write failed | the text is nowhere | it was saved to the logs folder |
-| the keystroke was refused | the text is on the clipboard | press Ctrl+V |
+| the keystroke was refused | the text is on the clipboard | press Ctrl+V (Cmd+V on macOS) |
 
 ## External dependencies
 

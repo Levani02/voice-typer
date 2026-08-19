@@ -257,3 +257,86 @@ def test_a_failure_to_restore_is_not_reported_as_a_failed_paste(clipboard, monke
     inject_text(TRANSCRIPT, restore_delay_ms=0, keyboard=keyboard)  # must not raise
 
     assert keyboard.pressed_keys == [injector_module.PASTE_KEY]
+
+
+class FakeQuartz:
+    """Stands in for the macOS Quartz framework and records every event posted."""
+
+    kCGEventFlagMaskCommand = 0x100000
+    kCGHIDEventTap = 0
+
+    def __init__(self):
+        self.posted: list[tuple[int, bool, int]] = []
+
+    def CGEventCreateKeyboardEvent(self, _source, key_code, is_press):
+        return {"key_code": key_code, "is_press": is_press, "flags": 0}
+
+    def CGEventSetFlags(self, event, flags):
+        event["flags"] = flags
+
+    def CGEventPost(self, _tap, event):
+        self.posted.append((event["key_code"], event["is_press"], event["flags"]))
+
+
+@pytest.fixture
+def macos(monkeypatch):
+    """Run the macOS paste path on any machine, with a fake Quartz underneath."""
+    quartz = FakeQuartz()
+    monkeypatch.setattr(injector_module, "IS_MACOS", True)
+    monkeypatch.setattr(injector_module, "MACOS_KEY_EVENT_GAP_SECONDS", 0)
+    monkeypatch.setattr(injector_module, "_macos_paste_is_permitted", lambda: True)
+    monkeypatch.setattr(injector_module, "_load_quartz", lambda: quartz)
+    return quartz
+
+
+def test_the_macos_paste_never_builds_a_pynput_controller(clipboard, macos, monkeypatch):
+    """The crash this fixes: building pynput's controller asks Carbon for the keyboard
+    layout, and on macOS 15 that call demands the main thread. The paste runs on a worker
+    thread, so the process was killed outright with SIGTRAP — every single time."""
+    monkeypatch.setattr(injector_module, "Controller", _raiser(AssertionError("SIGTRAP")))
+
+    inject_text(TRANSCRIPT, restore_delay_ms=0)
+
+    assert len(macos.posted) == 4  # the keystroke still went out
+    assert clipboard.content == PREVIOUS_CLIPBOARD  # and the paste counted as done
+
+
+def test_the_macos_paste_holds_command_around_the_v(clipboard, macos):
+    """Command down, v down, v up, command up — what a real keyboard would produce."""
+    inject_text(TRANSCRIPT, restore_delay_ms=0)
+
+    command = injector_module._MACOS_VK_COMMAND
+    v = injector_module._MACOS_VK_V
+    held = FakeQuartz.kCGEventFlagMaskCommand
+
+    assert macos.posted == [
+        (command, True, held),
+        (v, True, held),
+        (v, False, held),
+        (command, False, 0),
+    ]
+
+
+def test_a_paste_without_accessibility_permission_is_reported_not_assumed(
+    clipboard, macos, monkeypatch
+):
+    """Without that permission macOS accepts the event and delivers it nowhere. Believing
+    it would put the old clipboard back over the transcript and delete the recording."""
+    monkeypatch.setattr(injector_module, "_macos_paste_is_permitted", lambda: False)
+
+    with pytest.raises(PasteFailedError, match="Accessibility"):
+        inject_text(TRANSCRIPT, restore_delay_ms=0)
+
+    assert macos.posted == []
+    assert clipboard.content == TRANSCRIPT  # the words are still there for Cmd+V
+
+
+def test_a_quartz_that_refuses_the_event_leaves_the_text_on_the_clipboard(
+    clipboard, macos, monkeypatch
+):
+    monkeypatch.setattr(macos, "CGEventPost", _raiser(OSError("event tap closed")))
+
+    with pytest.raises(PasteFailedError):
+        inject_text(TRANSCRIPT, restore_delay_ms=0)
+
+    assert clipboard.content == TRANSCRIPT

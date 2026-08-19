@@ -6,6 +6,12 @@ depends on the active keyboard layout. Paste bypasses layout entirely.
 
 Whatever the user had copied before is saved and put back afterwards, including when the
 paste itself fails.
+
+On macOS the keystroke is posted to Quartz directly instead of through pynput. Creating
+pynput's keyboard controller asks Carbon for the current keyboard layout, and on macOS 15
+that call insists on running on the main queue: from the worker thread that does the
+pasting it does not raise, it kills the whole process with SIGTRAP. The key code is known
+here already, so the layout lookup was never buying anything.
 """
 
 from __future__ import annotations
@@ -55,6 +61,14 @@ MODIFIER_POLL_INTERVAL_SECONDS = 0.02
 
 # How long to let Windows settle after handing focus back before sending the keystroke.
 FOCUS_SETTLE_SECONDS = 0.06
+
+# kVK_Command. Posted as its own key event so the receiving application sees the modifier
+# go down before the "v" arrives, exactly as it would from a real keyboard.
+_MACOS_VK_COMMAND = 0x37
+
+# A breath between the four macOS key events. Posted back to back, an application that is
+# still bringing up its window can miss the modifier and receive a bare "v".
+MACOS_KEY_EVENT_GAP_SECONDS = 0.01
 
 
 def foreground_window() -> int:
@@ -233,7 +247,78 @@ def _write_clipboard(text: str) -> None:
         )
 
 
-def _send_paste(keyboard: Controller) -> None:
+def _load_quartz():
+    """Imported through a function so a test can stand in for the real framework."""
+    import Quartz
+
+    return Quartz
+
+
+def _macos_paste_is_permitted() -> bool:
+    """Whether macOS will actually deliver a synthetic keystroke to another application.
+
+    Without Accessibility permission `CGEventPost` succeeds and does nothing at all. That
+    silence is the dangerous part: the app would count the paste as done, put the old
+    clipboard back over the transcript and delete the recording, and the user's words
+    would be gone with no error anywhere. Asking first turns that into an honest failure.
+
+    If the check itself cannot run, the paste goes ahead — a missing answer is not a no.
+    """
+    try:
+        import HIServices
+
+        return bool(HIServices.AXIsProcessTrusted())
+    except Exception as exc:
+        logger.debug("could not ask macOS whether this app is trusted: %s", exc)
+        return True
+
+
+def _send_macos_paste() -> None:
+    """Post Cmd+V as four Quartz events, without pynput anywhere in the path.
+
+    See the module docstring: pynput's controller cannot be built off the main thread on
+    macOS 15 without taking the process down with it.
+    """
+    if not _macos_paste_is_permitted():
+        raise PasteFailedError(
+            "macOS has not given this app Accessibility permission, "
+            "so the paste keystroke cannot be sent"
+        )
+
+    try:
+        quartz = _load_quartz()
+    except Exception as exc:
+        raise PasteFailedError(f"the macOS keyboard API is unavailable: {exc}") from exc
+
+    command_held = quartz.kCGEventFlagMaskCommand
+    strokes = (
+        (_MACOS_VK_COMMAND, True, command_held),
+        (_MACOS_VK_V, True, command_held),
+        (_MACOS_VK_V, False, command_held),
+        (_MACOS_VK_COMMAND, False, 0),
+    )
+
+    try:
+        for key_code, is_press, flags in strokes:
+            event = quartz.CGEventCreateKeyboardEvent(None, key_code, is_press)
+            quartz.CGEventSetFlags(event, flags)
+            quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+            time.sleep(MACOS_KEY_EVENT_GAP_SECONDS)
+    except Exception as exc:
+        raise PasteFailedError(f"the paste keystroke was rejected: {exc}") from exc
+
+
+def _send_paste(keyboard: Controller | None = None) -> None:
+    """Send the paste shortcut — through Quartz on macOS, through pynput everywhere else.
+
+    `keyboard` is only ever supplied by a test; production code leaves it None so that
+    the platform decides.
+    """
+    if keyboard is None and IS_MACOS:
+        _send_macos_paste()
+        return
+
+    keyboard = keyboard or Controller()
     try:
         with keyboard.pressed(PASTE_MODIFIER):
             keyboard.press(PASTE_KEY)
@@ -261,7 +346,6 @@ def inject_text(
     if not text:
         return
 
-    keyboard = keyboard or Controller()
     previous = _read_clipboard() if restore_clipboard else None
     pasted = False
 
