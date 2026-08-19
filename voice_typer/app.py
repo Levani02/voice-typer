@@ -27,14 +27,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from voice_typer.config import CONFIG_PATH, LOGS_DIR, Config
+from voice_typer.focus import foreground_window, is_our_window
 from voice_typer.hotkey import Action, HotkeyListener
 from voice_typer.injector import (
     PASTE_SHORTCUT_LABEL,
     ClipboardUnavailableError,
     PasteFailedError,
-    foreground_window,
     inject_text,
-    is_our_window,
 )
 from voice_typer.platform_support import open_path
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
@@ -112,6 +111,7 @@ class App:
         self._showing_error = False
         self._quit_handler: Callable[[], None] | None = None
         self._target_window = 0  # where the user was typing before touching this app
+        self._started_in_our_window = False  # was this take begun by clicking our button?
         self._watching_focus = threading.Event()
         self._device_label: str | None = None  # looked up once, on first use
 
@@ -172,7 +172,11 @@ class App:
         elif action is Action.CANCEL:
             self._cancel_recording()
 
-    def _start_recording(self) -> None:
+    def _start_recording(self, *, from_window: bool = False) -> None:
+        # Clicking our own record button takes the focus off whatever the user was typing
+        # in; pressing the hotkey never does. On macOS that difference decides whether a
+        # paste is safe when the system cannot be asked where the focus went.
+        self._started_in_our_window = from_window
         self._cancel_error_reset()
         self._showing_error = False
         try:
@@ -251,7 +255,7 @@ class App:
             self._stop_recording()
         else:
             self._hotkey.logic.force_recording()
-            self._start_recording()
+            self._start_recording(from_window=True)
 
     def toggle_pause(self) -> None:
         """Suspend capture without losing what has been said so far, or carry on."""
@@ -454,6 +458,7 @@ class App:
                 restore_clipboard=self._config.restore_clipboard,
                 restore_delay_ms=self._config.clipboard_restore_delay_ms,
                 target_window=self._target_window,
+                started_from_our_window=self._started_in_our_window,
             )
         except PasteFailedError as exc:
             self._report_error(str(exc), f"ტექსტი clipboard-შია — დააჭირე {PASTE_SHORTCUT_LABEL}")

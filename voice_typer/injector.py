@@ -22,6 +22,7 @@ import time
 import pyperclip
 from pynput.keyboard import Controller, Key, KeyCode
 
+from voice_typer.focus import return_focus_to
 from voice_typer.platform_support import IS_MACOS, IS_WINDOWS
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,6 @@ _MACOS_MODIFIER_FLAGS = 0x20000 | 0x40000 | 0x80000 | 0x100000
 MODIFIER_WAIT_TIMEOUT_SECONDS = 1.0
 MODIFIER_POLL_INTERVAL_SECONDS = 0.02
 
-# How long to let Windows settle after handing focus back before sending the keystroke.
-FOCUS_SETTLE_SECONDS = 0.06
-
 # kVK_Command. Posted as its own key event so the receiving application sees the modifier
 # go down before the "v" arrives, exactly as it would from a real keyboard.
 _MACOS_VK_COMMAND = 0x37
@@ -69,87 +67,6 @@ _MACOS_VK_COMMAND = 0x37
 # A breath between the four macOS key events. Posted back to back, an application that is
 # still bringing up its window can miss the modifier and receive a bare "v".
 MACOS_KEY_EVENT_GAP_SECONDS = 0.01
-
-
-def foreground_window() -> int:
-    """Whichever window is in front right now, or 0 where that cannot be asked.
-
-    macOS gives no window handle to a process that does not own the window, and hands out
-    no equivalent without the screen-recording permission. It returns 0, which switches
-    the focus hand-back below off entirely — see `_return_focus_to` for why that is safe
-    there and not on Windows.
-    """
-    if not IS_WINDOWS:
-        return 0
-
-    import ctypes
-
-    try:
-        return int(ctypes.windll.user32.GetForegroundWindow())
-    except Exception as exc:
-        logger.warning("could not read the foreground window: %s", exc)
-        return 0
-
-
-def is_our_window(handle: int) -> bool:
-    """Does this window belong to this process — that is, is it the app's own window?"""
-    if not handle or not IS_WINDOWS:
-        return False
-
-    import ctypes
-
-    try:
-        user32 = ctypes.windll.user32
-        process_id = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(handle, ctypes.byref(process_id))
-        return process_id.value == ctypes.windll.kernel32.GetCurrentProcessId()
-    except Exception:
-        return False
-
-
-def _restore_foreground(handle: int) -> None:
-    """Put focus back on the window the user was working in.
-
-    Windows will not simply let one application steal the foreground, so if the direct
-    request is refused we attach our input queue to the target window's thread, which
-    makes the two count as one for the purposes of that rule, and try once more.
-    """
-    import ctypes
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    if user32.SetForegroundWindow(handle):
-        return
-
-    our_thread = kernel32.GetCurrentThreadId()
-    target_thread = user32.GetWindowThreadProcessId(handle, None)
-    if not target_thread or target_thread == our_thread:
-        return
-
-    user32.AttachThreadInput(our_thread, target_thread, True)
-    try:
-        user32.SetForegroundWindow(handle)
-        user32.SetFocus(handle)
-    finally:
-        user32.AttachThreadInput(our_thread, target_thread, False)
-
-
-def _return_focus_to(target_window: int) -> None:
-    """Only acts when our own window took the focus — never overrides a deliberate switch.
-
-    Pressing the hotkey leaves focus alone, so this does nothing. Clicking a button in the
-    app's own window moves focus to it, and then the paste would go nowhere: the keystroke
-    lands on a window that has no text field. That was the whole bug.
-    """
-    if not target_window or not is_our_window(foreground_window()):
-        return
-
-    try:
-        _restore_foreground(target_window)
-        time.sleep(FOCUS_SETTLE_SECONDS)
-        logger.info("handed focus back to the window the recording started in")
-    except Exception as exc:
-        logger.warning("could not hand focus back: %s", exc)
 
 
 class InjectionError(Exception):
@@ -334,12 +251,15 @@ def inject_text(
     restore_delay_ms: int = 300,
     keyboard: Controller | None = None,
     target_window: int = 0,
+    started_from_our_window: bool = False,
 ) -> None:
     """Paste `text` at the cursor in the focused window.
 
     `target_window` is where the recording started. It is only used if our own window has
     the focus by then, which happens when the user clicks a button here instead of using
-    the hotkey.
+    the hotkey — which is what `started_from_our_window` records. If the focus cannot be
+    given back, nothing is pasted at all: a keystroke sent into this app's own window
+    would be counted as a success and would cost the user their words.
 
     On failure the text is left on the clipboard, so the user can still press Ctrl+V.
     """
@@ -351,7 +271,8 @@ def inject_text(
 
     try:
         _write_clipboard(text)
-        _return_focus_to(target_window)
+        if not return_focus_to(target_window, started_from_our_window=started_from_our_window):
+            raise PasteFailedError("the window you were typing in did not come back to the front")
         _wait_for_modifiers_released()
         _send_paste(keyboard)
         pasted = True

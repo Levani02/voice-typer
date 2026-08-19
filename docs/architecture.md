@@ -21,6 +21,7 @@ hotkey listener  →  recorder  →  ElevenLabs Scribe v2  →  text injector
 | `voice_typer/hotkey.py` | global key listener; tells hold apart from tap |
 | `voice_typer/transcriber.py` | ElevenLabs Scribe v2 client, one retry, usage accounting |
 | `voice_typer/injector.py` | clipboard save → set → `Ctrl+V` → restore |
+| `voice_typer/focus.py` | remembers the window the user was typing in, and gives it back |
 | `voice_typer/overlay.py` | the recorder window — the app's visible surface |
 | `voice_typer/widget_theme.py` | colours, and the drawing Tk cannot do by itself |
 | `voice_typer/tray.py` | tray icon, kept as a fallback for the window |
@@ -104,6 +105,25 @@ reported as a refused keystroke instead, which leaves the text on the clipboard.
 
 The full reasoning, and the alternatives that were rejected, are in
 [decisions/004-macos-paste-via-quartz.md](decisions/004-macos-paste-via-quartz.md).
+
+### Giving the focus back, and refusing to paste without it
+
+Pressing the hotkey leaves the focus alone. Clicking the app's own record button does not:
+the window comes forward, the caret in the other application goes away, and a paste sent
+then would land on a canvas with nowhere to put it. `focus.py` remembers where the user
+was — a window handle on Windows, the frontmost application's process id on macOS — and
+puts it back before the keystroke.
+
+The two systems differ in what happens when that fails. On Windows the paste goes ahead
+anyway: the behaviour is verified on a real desktop and a paste that lands somewhere beats
+one that lands nowhere. On macOS it does not. Activation there is a request the system may
+refuse, and a Cmd+V into this app's own window would do nothing while still counting as a
+success — which would restore the previous clipboard over the transcript and delete the
+recording. So macOS waits for the focus to actually leave, and if it has not left within
+half a second, nothing is pasted at all and the user is told to press Cmd+V.
+
+The full reasoning is in
+[decisions/005-macos-focus-hand-back.md](decisions/005-macos-focus-hand-back.md).
 
 ## The window is drawn, not laid out
 

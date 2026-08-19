@@ -15,6 +15,7 @@ import pytest
 from voice_typer import app as app_module
 from voice_typer.app import App
 from voice_typer.config import Config
+from voice_typer.hotkey import Action
 from voice_typer.injector import ClipboardUnavailableError, PasteFailedError
 from voice_typer.recorder import Recording, build_wav
 from voice_typer.transcriber import Transcript, TranscriptionError, Usage
@@ -769,3 +770,38 @@ def test_old_recordings_are_pruned_at_startup(logs, pasted):
 
     assert not stale.exists()
     assert fresh.exists()
+
+
+def test_a_take_started_from_the_window_says_so_when_it_is_pasted(logs, monkeypatch):
+    """Clicking the record button is the only thing that moves the focus. On macOS that
+    fact is what decides whether pasting is safe when the system cannot be asked where
+    the focus went, so it has to travel with the take."""
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        app_module,
+        "inject_text",
+        lambda text, **kwargs: seen.append(kwargs["started_from_our_window"]),
+    )
+    app = build_app()
+
+    app.toggle_recording()
+    app.toggle_recording()
+    assert app._wait_for_jobs(5)
+
+    assert seen == [True]
+
+
+def test_a_take_started_with_the_hotkey_says_so_too(logs, monkeypatch):
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        app_module,
+        "inject_text",
+        lambda text, **kwargs: seen.append(kwargs["started_from_our_window"]),
+    )
+    app = build_app()
+
+    app._handle_action(Action.START)
+    app._handle_action(Action.STOP)
+    assert app._wait_for_jobs(5)
+
+    assert seen == [False]
