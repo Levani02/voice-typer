@@ -177,7 +177,9 @@ def report_result() -> int:
     if IS_MACOS:
         print(
             "\nmacOS will refuse to open it until it is either signed or allowed by hand:"
-            "\n  right-click the app, choose Open, then Open again in the warning."
+            "\n  macOS 14 and older: right-click the app, Open, then Open again."
+            "\n  macOS 15 and newer: open it, then System Settings > Privacy &"
+            "\n  Security > Open Anyway. Apple removed the right-click route in 15."
             "\nIt also needs Accessibility and Microphone permission — System Settings >"
             "\nPrivacy & Security. Without Accessibility the hotkey does nothing at all."
         )
