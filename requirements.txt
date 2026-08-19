@@ -6,7 +6,7 @@ pynput>=1.7.7
 # them itself: AppKit for handing the focus back, HIServices for the Accessibility check.
 pyobjc-framework-Cocoa>=8.0; sys_platform == "darwin"
 pyobjc-framework-ApplicationServices>=8.0; sys_platform == "darwin"
-pyperclip>=1.9.0
+pyperclip>=1.11.0
 pystray>=0.19.5
 # pystray accepts any Pillow. Majors ship every October and have broken it before, so the
 # ceiling is deliberate — raise it once Pillow 13 has been tried against the tray icon.
