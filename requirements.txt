@@ -1,7 +1,7 @@
 elevenlabs>=2.0.0
 sounddevice>=0.5.0
 numpy>=2.0.0
-pynput>=1.7.7
+pynput>=1.8.2
 # macOS only, and already arriving through pynput — declared because this project imports
 # them itself: AppKit for handing the focus back, HIServices for the Accessibility check.
 pyobjc-framework-Cocoa>=8.0; sys_platform == "darwin"
