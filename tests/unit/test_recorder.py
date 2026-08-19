@@ -378,3 +378,88 @@ def test_a_device_that_refuses_every_rate_is_still_explained(fake_audio):
         recorder.start()
 
     assert not recorder.is_recording
+
+
+def test_a_take_is_never_resumed_at_a_different_rate(fake_audio):
+    """Resuming at a new rate would splice two speeds into one sentence.
+
+    Found by review, reproduced before it was fixed: the first segment played back three
+    times too slow, the transcript came back as nonsense, and the cost accounting billed
+    twice the real length. Unplugging a headset while paused is enough to trigger it.
+    """
+    opened, _ = fake_audio
+    recorder_module.sd.unsupported_rates.add(SAMPLE_RATE)
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    opened[0].feed(b"\x01\x02" * 240)
+    recorder.pause()
+    # The default input changed while paused — the new one does 16 kHz and nothing else,
+    # so a fallback would happily open at a rate this take's samples cannot be joined at.
+    recorder_module.sd.unsupported_rates.clear()
+    recorder_module.sd.unsupported_rates.add(48_000)
+    recorder_module.sd.native_rate = SAMPLE_RATE
+
+    with pytest.raises(RecorderError, match="microphone"):
+        recorder.resume()
+
+    assert len(opened) == 1  # nothing was opened at a rate this take cannot use
+    assert recorder.is_recording  # and the take is still alive, not silently dropped
+
+
+def test_words_already_spoken_survive_a_resume_that_fails(fake_audio):
+    """A microphone that goes away mid-sentence must not take the sentence with it."""
+    opened, _ = fake_audio
+    recorder_module.sd.unsupported_rates.add(SAMPLE_RATE)
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+    opened[0].feed(b"\x01\x02" * 240)
+    recorder.pause()
+    recorder_module.sd.unsupported_rates.clear()
+    recorder_module.sd.unsupported_rates.add(48_000)
+    recorder_module.sd.native_rate = SAMPLE_RATE
+    with pytest.raises(RecorderError):
+        recorder.resume()
+
+    result = recorder.stop()  # the user presses stop after the failure
+
+    assert wav_duration_seconds(result.wav_bytes) == pytest.approx(240 / 48_000)
+    assert result.duration_seconds == pytest.approx(240 / 48_000)
+
+
+def test_a_take_killed_by_a_dead_device_does_not_fix_the_rate_for_ever(fake_audio):
+    """A take can end without ever draining, and must not leave its rate behind.
+
+    The device vanishing mid-take skips `stop` entirely, so the rate was only cleared on
+    the tidy path. Every later recording then ignored config.json and uploaded three
+    times more than it needed to.
+    """
+    opened, _ = fake_audio
+    recorder_module.sd.unsupported_rates.add(SAMPLE_RATE)
+    recorder = Recorder(SAMPLE_RATE)
+    recorder.start()
+
+    opened[0].finished_callback()  # PortAudio abandoned the stream — no stop, no drain
+    recorder_module.sd.unsupported_rates.clear()
+    recorder.start()
+
+    assert opened[0].samplerate == 48_000
+    assert opened[1].samplerate == SAMPLE_RATE  # config.json is honoured again
+
+
+def test_a_stream_that_cannot_start_is_closed(fake_audio):
+    """An opened stream holds the microphone whether it ever started or not.
+
+    The caller keeps no reference to close it by, so it has to be closed where it was
+    made — and the fallback means two of them can be created for a single key press.
+    """
+    opened, fail_on = fake_audio
+    fail_on.add("start")
+    recorder = Recorder(SAMPLE_RATE)
+
+    with pytest.raises(RecorderError, match="microphone"):
+        recorder.start()
+
+    assert len(opened) == 2  # the configured rate, then the device's own
+    assert all(stream.closed for stream in opened)  # neither one still holds the device

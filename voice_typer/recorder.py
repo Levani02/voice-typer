@@ -140,6 +140,10 @@ class Recorder:
                 return
             self._chunks = []
             self._recorded_seconds = 0.0
+            # Cleared here and not only in `_drain`: a take can end without ever draining
+            # — the device dies mid-take, or a resume fails — and inheriting its rate
+            # would silently override config.json for the rest of the session.
+            self._active_sample_rate = None
             self._paused = False
         self._open_stream()
 
@@ -157,7 +161,14 @@ class Recorder:
         if not self._paused:
             return
         self._paused = False
-        self._open_stream()
+        try:
+            self._open_stream()
+        except RecorderError:
+            # Throwing away what the user already said is the worse outcome. Staying
+            # paused keeps the take alive, so `stop` can still hand over the first
+            # segment and the words survive a microphone that went away mid-sentence.
+            self._paused = True
+            raise
         logger.info("recording resumed")
 
     def stop(self) -> Recording:
@@ -187,13 +198,17 @@ class Recorder:
         """Open the microphone — at the device's own rate if it will not accept ours.
 
         Asking for 16 kHz is right: it is the smallest rate that loses nothing for speech,
-        so the upload stays fast. But asking is all it can be. Windows resamples whatever
-        the hardware produces into whatever was requested, which is why a fixed rate
-        worked there for months. CoreAudio does not resample input — on a Mac the device
-        opens at its own hardware rate or it refuses outright, and a MacBook's built-in
-        microphone runs at 48 kHz. The refusal arrives as "Invalid sample rate" and reads
-        to the user as a microphone that does not work, one that mysteriously starts
-        working when headphones are unplugged, because that swaps in a different device.
+        so the upload stays fast. But asking is all it can be. On Windows the request is
+        always granted; on macOS it is not, and a device that refuses raises "Invalid
+        sample rate" — which reaches the user as a microphone that simply does not work,
+        one that appears to fix itself when headphones are unplugged, because that swaps
+        in a different device.
+
+        Exactly which layer refuses is inferred, not measured: this project has no Mac to
+        measure on, and the reading that fits the reports is that a rate the hardware does
+        not run at is not always converted for you. What matters here does not depend on
+        settling that. If the request would have been granted anyway this costs nothing —
+        the first attempt succeeds and the fallback never runs.
 
         A take already under way keeps the rate it began with — see `_wanted_rate`.
         """
@@ -201,6 +216,12 @@ class Recorder:
         try:
             stream = self._start_stream(wanted)
         except Exception as refused:  # sounddevice raises several unrelated types
+            if self._active_sample_rate is not None:
+                # Mid-take, which means resuming. The rate this take began with is the
+                # only one its samples can be joined at, so there is nothing to fall back
+                # to — opening at a different one would splice two speeds into a single
+                # sentence and bill for the difference. `resume` keeps the take paused.
+                raise self._cannot_open(refused) from refused
             native = self._native_sample_rate()
             if native is None or native == wanted:
                 raise self._cannot_open(refused) from refused
@@ -241,7 +262,14 @@ class Recorder:
             callback=self._on_audio,
             finished_callback=self._on_stream_finished,
         )
-        stream.start()
+        try:
+            stream.start()
+        except Exception:
+            # An opened stream holds the device whether it ever started or not, and the
+            # caller keeps no reference to close it by. That matters doubly now that a
+            # refusal is followed by a second attempt on the very same microphone.
+            stream.close(ignore_errors=True)
+            raise
         return stream
 
     def _native_sample_rate(self) -> int | None:
