@@ -96,6 +96,9 @@ class Recorder:
     def __init__(self, sample_rate: int, device: int | str | None = None) -> None:
         self._sample_rate = sample_rate
         self._device = device
+        # The rate the microphone actually agreed to, once a take has begun. None between
+        # takes, so every fresh recording asks for the configured rate again.
+        self._active_sample_rate: int | None = None
         self._stream: sd.InputStream | None = None
         self._chunks: list[bytes] = []
         self._segment_started_at: float | None = None
@@ -137,6 +140,10 @@ class Recorder:
                 return
             self._chunks = []
             self._recorded_seconds = 0.0
+            # Cleared here and not only in `_drain`: a take can end without ever draining
+            # — the device dies mid-take, or a resume fails — and inheriting its rate
+            # would silently override config.json for the rest of the session.
+            self._active_sample_rate = None
             self._paused = False
         self._open_stream()
 
@@ -154,16 +161,30 @@ class Recorder:
         if not self._paused:
             return
         self._paused = False
-        self._open_stream()
+        try:
+            self._open_stream()
+        except RecorderError:
+            # Throwing away what the user already said is the worse outcome. Staying
+            # paused keeps the take alive, so `stop` can still hand over the first
+            # segment and the words survive a microphone that went away mid-sentence.
+            self._paused = True
+            raise
         logger.info("recording resumed")
 
     def stop(self) -> Recording:
-        """Close the microphone and return what was captured."""
+        """Close the microphone and return what was captured.
+
+        The rate is read before draining, because draining forgets it: the samples carry
+        no rate of their own, and a 48 kHz take written with a 16 kHz header plays back
+        three times too slow — which would be uploaded, transcribed as nonsense, and
+        billed at three times its real length.
+        """
         self._release_stream()
+        rate = self._active_sample_rate or self._sample_rate
         pcm = self._drain()
-        duration = pcm_duration_seconds(pcm, self._sample_rate)
-        logger.info("recording stopped (%.1f s)", duration)
-        return Recording(wav_bytes=build_wav(pcm, self._sample_rate), duration_seconds=duration)
+        duration = pcm_duration_seconds(pcm, rate)
+        logger.info("recording stopped (%.1f s at %d Hz)", duration, rate)
+        return Recording(wav_bytes=build_wav(pcm, rate), duration_seconds=duration)
 
     def cancel(self) -> None:
         """Close the microphone and throw the samples away. Nothing is uploaded."""
@@ -174,25 +195,102 @@ class Recorder:
     # ------------------------------------------------------------------ stream handling
 
     def _open_stream(self) -> None:
+        """Open the microphone — at the device's own rate if it will not accept ours.
+
+        Asking for 16 kHz is right: it is the smallest rate that loses nothing for speech,
+        so the upload stays fast. But asking is all it can be. On Windows the request is
+        always granted; on macOS it is not, and a device that refuses raises "Invalid
+        sample rate" — which reaches the user as a microphone that simply does not work,
+        one that appears to fix itself when headphones are unplugged, because that swaps
+        in a different device.
+
+        Exactly which layer refuses is inferred, not measured: this project has no Mac to
+        measure on, and the reading that fits the reports is that a rate the hardware does
+        not run at is not always converted for you. What matters here does not depend on
+        settling that. If the request would have been granted anyway this costs nothing —
+        the first attempt succeeds and the fallback never runs.
+
+        A take already under way keeps the rate it began with — see `_wanted_rate`.
+        """
+        wanted = self._wanted_rate()
         try:
-            stream = sd.InputStream(
-                samplerate=self._sample_rate,
-                channels=CHANNELS,
-                dtype="int16",
-                device=self._device,
-                callback=self._on_audio,
-                finished_callback=self._on_stream_finished,
+            stream = self._start_stream(wanted)
+        except Exception as refused:  # sounddevice raises several unrelated types
+            if self._active_sample_rate is not None:
+                # Mid-take, which means resuming. The rate this take began with is the
+                # only one its samples can be joined at, so there is nothing to fall back
+                # to — opening at a different one would splice two speeds into a single
+                # sentence and bill for the difference. `resume` keeps the take paused.
+                raise self._cannot_open(refused) from refused
+            native = self._native_sample_rate()
+            if native is None or native == wanted:
+                raise self._cannot_open(refused) from refused
+            logger.warning(
+                "the microphone refused %d Hz (%s) — recording at its own %d Hz instead",
+                wanted,
+                refused,
+                native,
             )
-            stream.start()
-        except Exception as exc:  # sounddevice raises several unrelated types
-            self._paused = False
-            raise RecorderError(f"could not open the microphone: {exc}") from exc
+            try:
+                stream = self._start_stream(native)
+            except Exception as exc:
+                raise self._cannot_open(exc) from exc
+            wanted = native
 
         with self._lock:
             self._stream = stream
+            self._active_sample_rate = wanted
             self._segment_started_at = time.monotonic()
             self._last_audio_at = self._segment_started_at
-        logger.info("recording started (device=%s, %d Hz)", self._device, self._sample_rate)
+        logger.info("recording started (device=%s, %d Hz)", self._device, wanted)
+
+    def _wanted_rate(self) -> int:
+        """The configured rate, unless this take already settled on another one.
+
+        Resuming has to reopen at the rate the take began with. The segments are joined
+        as raw PCM with no rate information in them, so two segments at different rates
+        would concatenate into audio that speeds up halfway through.
+        """
+        return self._active_sample_rate or self._sample_rate
+
+    def _start_stream(self, sample_rate: int) -> sd.InputStream:
+        stream = sd.InputStream(
+            samplerate=sample_rate,
+            channels=CHANNELS,
+            dtype="int16",
+            device=self._device,
+            callback=self._on_audio,
+            finished_callback=self._on_stream_finished,
+        )
+        try:
+            stream.start()
+        except Exception:
+            # An opened stream holds the device whether it ever started or not, and the
+            # caller keeps no reference to close it by. That matters doubly now that a
+            # refusal is followed by a second attempt on the very same microphone.
+            stream.close(ignore_errors=True)
+            raise
+        return stream
+
+    def _native_sample_rate(self) -> int | None:
+        """The rate the device itself runs at, or None if it cannot be asked.
+
+        Deliberately not held to the range `config.json` enforces: that range guards what
+        the user may type, and this is the hardware stating a fact. A device that runs at
+        96 kHz is still the only microphone they have.
+        """
+        try:
+            info = sd.query_devices(self._device, "input")
+            rate = round(float(info["default_samplerate"]))
+        except Exception as exc:
+            logger.warning("could not ask the microphone for its own rate: %s", exc)
+            return None
+        return rate if rate > 0 else None
+
+    def _cannot_open(self, exc: Exception) -> RecorderError:
+        """Reset enough state that the hotkey stays usable, and describe the failure."""
+        self._paused = False
+        return RecorderError(f"could not open the microphone: {exc}")
 
     def _release_stream(self) -> None:
         """Close the stream and bank the elapsed time. The captured samples stay put.
@@ -230,6 +328,7 @@ class Recorder:
         with self._lock:
             chunks, self._chunks = self._chunks, []
             self._recorded_seconds = 0.0
+            self._active_sample_rate = None  # the next take asks for the configured rate
             self._paused = False
             self._level = 0.0
         return b"".join(chunks)

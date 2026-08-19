@@ -141,6 +141,14 @@ key_is_filled_in() {
     grep -Eq "^[[:space:]]*$KEY_SETTING[[:space:]]*=[[:space:]]*[^[:space:]]" "$ENV_FILE"
 }
 
+create_env_file() {
+    # 600 whichever route the file arrived by. It is about to hold an ElevenLabs API key,
+    # and the default umask leaves it readable by every other account on the Mac. The
+    # interactive path already did this; the two paths that only copy the example did not.
+    [ -f "$ENV_FILE" ] || cp "$PROJECT_ROOT/.env.example" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+}
+
 save_api_key() {
     # Written straight to .env, which is in .gitignore and never leaves this machine.
     # The setting name is a variable so that nothing in this repository ever contains
@@ -158,7 +166,7 @@ step 4 "Setting up your ElevenLabs API key"
 if key_is_filled_in; then
     note "Your key is already in .env — leaving it alone."
 elif [ "$NON_INTERACTIVE" = "1" ]; then
-    [ -f "$ENV_FILE" ] || cp "$PROJECT_ROOT/.env.example" "$ENV_FILE"
+    create_env_file
     note "Created .env — put your key in it before starting the app."
 else
     echo
@@ -171,7 +179,7 @@ else
     echo
     API_KEY="$(printf '%s' "$API_KEY" | tr -d '[:space:]')"
     if [ -z "$API_KEY" ]; then
-        [ -f "$ENV_FILE" ] || cp "$PROJECT_ROOT/.env.example" "$ENV_FILE"
+        create_env_file
         note "No key entered. Created .env — open it and paste the key in later."
     else
         save_api_key "$API_KEY"
