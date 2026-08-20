@@ -16,6 +16,8 @@ from pathlib import Path
 
 from elevenlabs.client import ElevenLabs
 
+from voice_typer.fillers import strip_fillers
+
 logger = logging.getLogger(__name__)
 
 RETRY_DELAY_SECONDS = 1.5
@@ -37,6 +39,15 @@ def _billed_seconds(result: object) -> float | None:
 
 class TranscriptionError(Exception):
     """The audio could not be turned into text. The message is shown to the user."""
+
+
+class NothingToPasteError(TranscriptionError):
+    """Words came back, but every one of them was a hesitation sound.
+
+    A subclass so `transcribe` still refuses to retry it — a grunt is a grunt on the
+    second upload too — while `app.py` can tell it apart from a real failure and say
+    something kinder than "transcription failed".
+    """
 
 
 @dataclass(frozen=True)
@@ -157,11 +168,16 @@ class Transcriber:
         model_id: str,
         language_code: str,
         keyterms: tuple[str, ...] = (),
+        *,
+        no_verbatim: bool = False,
+        filler_words: tuple[str, ...] = (),
     ) -> None:
         self._client = ElevenLabs(api_key=api_key)
         self._model_id = model_id
         self._language_code = language_code
         self._keyterms = keyterms
+        self._no_verbatim = no_verbatim
+        self._filler_words = filler_words
 
     def transcribe(self, wav_bytes: bytes) -> Transcript:
         """Return the transcript. Retries once on a transient failure, then gives up."""
@@ -202,10 +218,36 @@ class Transcriber:
             # deliberately: above that, ElevenLabs bills a 20-second minimum per request,
             # which would multiply the cost of a short dictation several times over.
             options["keyterms"] = list(self._keyterms[:MAX_KEYTERMS])
+        if self._no_verbatim:
+            # "ააა", "მმმ", false starts — dropped by the model, before we ever see them.
+            # Omitted rather than sent as False when it is off, so switching it off makes
+            # the request byte-for-byte what it was before this feature existed.
+            options["no_verbatim"] = True
 
         result = self._client.speech_to_text.convert(**options)
 
-        text = (getattr(result, "text", "") or "").strip()
+        return Transcript(
+            text=self._clean(getattr(result, "text", "")),
+            billed_seconds=_billed_seconds(result),
+        )
+
+    def _clean(self, raw: object) -> str:
+        """Trim it, drop the hesitations, and refuse to hand back nothing at all.
+
+        The order matters. A genuinely silent recording keeps the message and the class it
+        has always had, so nothing downstream has to learn a new failure. Only a take that
+        *had* words and lost them all to the filter gets the new one.
+        """
+        text = (str(raw) if raw else "").strip()
         if not text:
             raise TranscriptionError("ElevenLabs returned no text — the recording may be silent")
-        return Transcript(text=text, billed_seconds=_billed_seconds(result))
+
+        text, removed = strip_fillers(text, self._filler_words)
+        if removed:
+            # The number only. The words themselves never reach a log file.
+            logger.info("dropped %d hesitation sound(s) from the transcript", removed)
+        if not text:
+            raise NothingToPasteError(
+                "the recording was only hesitation sounds — there is nothing to paste"
+            )
+        return text

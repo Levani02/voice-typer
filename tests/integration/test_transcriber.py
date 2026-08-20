@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from voice_typer import transcriber as transcriber_module
-from voice_typer.transcriber import Transcriber, TranscriptionError
+from voice_typer.transcriber import NothingToPasteError, Transcriber, TranscriptionError
 
 GEORGIAN_SAMPLE = "გამარჯობა, ეს არის ტესტი"
 WAV_BYTES = b"RIFF....WAVEfake"
@@ -35,12 +35,29 @@ class FakeClient:
         self.speech_to_text = FakeSpeechToText(responses, billed_seconds)
 
 
-def make_transcriber(monkeypatch, responses, keyterms=(), billed_seconds=None):
+def make_transcriber(
+    monkeypatch,
+    responses,
+    keyterms=(),
+    billed_seconds=None,
+    no_verbatim=False,
+    filler_words=(),
+):
     """Build a Transcriber whose client is the fake, with the retry pause removed."""
     client = FakeClient(responses, billed_seconds)
     monkeypatch.setattr(transcriber_module, "ElevenLabs", lambda api_key: client)
     monkeypatch.setattr(transcriber_module, "RETRY_DELAY_SECONDS", 0)
-    return Transcriber("test-key-not-real", "scribe_v2", "kat", keyterms), client
+    return (
+        Transcriber(
+            "test-key-not-real",
+            "scribe_v2",
+            "kat",
+            keyterms,
+            no_verbatim=no_verbatim,
+            filler_words=filler_words,
+        ),
+        client,
+    )
 
 
 def http_error(status: int, message: str | None = None) -> Exception:
@@ -201,3 +218,50 @@ def test_a_missing_billed_duration_is_none_rather_than_a_guess(monkeypatch):
 def test_a_nonsense_billed_duration_is_ignored(monkeypatch):
     transcriber, _ = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], billed_seconds="soon")
     assert transcriber.transcribe(WAV_BYTES).billed_seconds is None
+
+
+# --------------------------------------------------------------- hesitation sounds
+
+
+def test_no_verbatim_is_sent_when_it_is_switched_on(monkeypatch):
+    transcriber, client = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], no_verbatim=True)
+    transcriber.transcribe(WAV_BYTES)
+    assert client.speech_to_text.calls[0]["no_verbatim"] is True
+
+
+def test_no_verbatim_is_not_sent_at_all_when_it_is_switched_off(monkeypatch):
+    """Off has to mean the request is what it was before this feature existed — not the
+    same request carrying `false`, which is a different thing to explain to a server."""
+    transcriber, client = make_transcriber(monkeypatch, [GEORGIAN_SAMPLE], no_verbatim=False)
+    transcriber.transcribe(WAV_BYTES)
+    assert "no_verbatim" not in client.speech_to_text.calls[0]
+
+
+def test_hesitation_sounds_are_dropped_from_what_the_api_returned(monkeypatch):
+    transcriber, _ = make_transcriber(
+        monkeypatch, ["დღეს ააა სამსახურში წავედი"], filler_words=("ააა",)
+    )
+    assert transcriber.transcribe(WAV_BYTES).text == "დღეს სამსახურში წავედი"
+
+
+def test_a_recording_of_only_hesitation_is_an_error_not_an_empty_paste(monkeypatch):
+    """An empty string reaching the injector counts as a successful dictation and deletes
+    the audio. It must never get there."""
+    transcriber, _ = make_transcriber(monkeypatch, ["მმმ"], filler_words=("მმმ",))
+    with pytest.raises(NothingToPasteError):
+        transcriber.transcribe(WAV_BYTES)
+
+
+def test_a_filler_only_recording_is_told_apart_from_a_silent_one(monkeypatch):
+    transcriber, _ = make_transcriber(monkeypatch, [""], filler_words=("მმმ",))
+    with pytest.raises(TranscriptionError) as caught:
+        transcriber.transcribe(WAV_BYTES)
+    assert not isinstance(caught.value, NothingToPasteError)
+
+
+def test_a_filler_only_recording_is_not_uploaded_a_second_time(monkeypatch):
+    """Retrying would spend money to be told the same thing."""
+    transcriber, client = make_transcriber(monkeypatch, ["მმმ", "მმმ"], filler_words=("მმმ",))
+    with pytest.raises(NothingToPasteError):
+        transcriber.transcribe(WAV_BYTES)
+    assert len(client.speech_to_text.calls) == 1

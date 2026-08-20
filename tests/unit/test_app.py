@@ -18,7 +18,12 @@ from voice_typer.config import Config
 from voice_typer.hotkey import Action
 from voice_typer.injector import ClipboardUnavailableError, PasteFailedError
 from voice_typer.recorder import Recording, build_wav
-from voice_typer.transcriber import Transcript, TranscriptionError, Usage
+from voice_typer.transcriber import (
+    NothingToPasteError,
+    Transcript,
+    TranscriptionError,
+    Usage,
+)
 from voice_typer.tray import TrayState
 
 TRANSCRIPT = "გამარჯობა"
@@ -38,8 +43,13 @@ def make_config(**overrides) -> Config:
         "clipboard_restore_delay_ms": 0,
         "language_code": "kat",
         "model_id": "scribe_v2",
+        "no_verbatim": False,
         "price_per_hour_usd": 0.22,
         "keyterms": (),
+        # Off by default here so the app tests read the transcriber's own output. The
+        # filtering itself is tested where it lives, in `test_fillers.py`.
+        "filler_words": (),
+        "summary_instruction": "შეაჯამე:",
         "prune_takes_after_days": 7,
         "window_scale": 1.0,
         "content_scale": 1.0,
@@ -805,3 +815,67 @@ def test_a_take_started_with_the_hotkey_says_so_too(logs, monkeypatch):
     assert app._wait_for_jobs(5)
 
     assert seen == [False]
+
+
+# ------------------------------------------------------------------ the summary mode
+
+
+def test_the_words_go_out_alone_in_the_ordinary_mode(logs, pasted):
+    app = build_app()
+    run_one_job(app)
+    assert pasted == [TRANSCRIPT]
+
+
+def test_summary_mode_puts_the_instruction_in_front_of_the_words(logs, pasted):
+    """The app asks no model anything. The instruction rides along to whatever receives
+    the paste, which is why the transcript has to survive underneath it, word for word."""
+    app = build_app(make_config(summary_instruction="შეაჯამე:"))
+    app.toggle_summary_mode()
+
+    run_one_job(app)
+
+    assert pasted == [f"შეაჯამე:\n\n{TRANSCRIPT}"]
+
+
+def test_switching_the_mode_back_pastes_the_words_again(logs, pasted):
+    app = build_app(make_config(summary_instruction="შეაჯამე:"))
+    app.toggle_summary_mode()
+    app.toggle_summary_mode()
+
+    run_one_job(app)
+
+    assert pasted == [TRANSCRIPT]
+
+
+def test_the_mode_the_window_remembered_is_the_one_that_is_used(logs, pasted):
+    app = build_app(make_config(summary_instruction="შეაჯამე:"))
+    app.set_summary_mode(True)
+
+    run_one_job(app)
+
+    assert pasted[0].startswith("შეაჯამე:")
+    assert app.ui_summary_mode() is True
+
+
+def test_a_recording_of_only_hesitation_keeps_its_audio_and_pastes_nothing(logs, pasted):
+    """Nothing reached the cursor, so nothing was dictated — the take is not a success."""
+    tray = FakeTray()
+    app = build_app(transcriber=FakeTranscriber(error=NothingToPasteError("only ums")), tray=tray)
+
+    run_one_job(app)
+
+    assert pasted == []
+    assert len(kept_recordings()) == 1
+    assert tray.messages
+
+
+def test_a_hesitation_only_take_is_not_reported_as_a_transcription_failure(logs, pasted):
+    """It is a different thing from "the upload failed", and the message has to say so —
+    otherwise the user goes looking for a problem that is not there."""
+    tray = FakeTray()
+    app = build_app(transcriber=FakeTranscriber(error=NothingToPasteError("only ums")), tray=tray)
+
+    run_one_job(app)
+
+    assert tray.states[-1] is TrayState.ERROR  # the state machine still recovers
+    assert TRANSCRIPT not in " ".join(tray.messages)

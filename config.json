@@ -9,8 +9,23 @@
   "clipboard_restore_delay_ms": 300,
   "language_code": "kat",
   "model_id": "scribe_v2",
+  "no_verbatim": true,
   "price_per_hour_usd": 0.22,
   "keyterms": [],
+  "filler_words": [
+    "ააა",
+    "ეეე",
+    "ოოო",
+    "მმმ",
+    "ჰმმ",
+    "ემმ",
+    "უუუ",
+    "uh",
+    "um",
+    "erm",
+    "hmm"
+  ],
+  "summary_instruction": "შემდეგი ნათქვამი გადაწერე მოკლედ და გასწორებულად, საკითხების გამოყოფით:",
   "prune_takes_after_days": 7,
   "window_scale": 0.5,
   "content_scale": 1.3

@@ -37,7 +37,13 @@ from voice_typer.injector import (
 )
 from voice_typer.platform_support import open_path
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
-from voice_typer.transcriber import Transcriber, Transcript, TranscriptionError, UsageLog
+from voice_typer.transcriber import (
+    NothingToPasteError,
+    Transcriber,
+    Transcript,
+    TranscriptionError,
+    UsageLog,
+)
 from voice_typer.tray import TrayIcon, TrayState
 
 logger = logging.getLogger(__name__)
@@ -92,7 +98,12 @@ class App:
         self._config = config
         self._recorder = recorder or Recorder(config.sample_rate, config.input_device)
         self._transcriber = transcriber or Transcriber(
-            config.api_key, config.model_id, config.language_code, config.keyterms
+            config.api_key,
+            config.model_id,
+            config.language_code,
+            config.keyterms,
+            no_verbatim=config.no_verbatim,
+            filler_words=config.filler_words,
         )
         self._usage = usage or UsageLog(USAGE_PATH, config.price_per_hour_usd)
         self._hotkey = hotkey or HotkeyListener(
@@ -114,6 +125,11 @@ class App:
         self._started_in_our_window = False  # was this take begun by clicking our button?
         self._watching_focus = threading.Event()
         self._device_label: str | None = None  # looked up once, on first use
+        # False means the words go where the cursor is, as they were spoken. True puts the
+        # instruction from config.json in front of them, so whatever receives the paste —
+        # a chat box with an assistant in it — does the summarising. This app asks no
+        # model anything either way.
+        self._summary_mode = False
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -249,6 +265,19 @@ class App:
         if self._device_label is None:
             self._device_label = _describe_input_device(self._config.input_device)
         return self._device_label
+
+    def ui_summary_mode(self) -> bool:
+        """True when the instruction rides in front of the words."""
+        return self._summary_mode
+
+    def set_summary_mode(self, on: bool) -> None:
+        """Used once at startup, to restore the mode the window remembered."""
+        self._summary_mode = bool(on)
+
+    def toggle_summary_mode(self) -> None:
+        """The window's mode switch."""
+        self._summary_mode = not self._summary_mode
+        logger.info("summary mode %s", "on" if self._summary_mode else "off")
 
     def toggle_recording(self) -> None:
         """The window's record button. Does what pressing the hotkey would do."""
@@ -425,16 +454,32 @@ class App:
     def _run_job(self, recording: Recording, path: Path) -> bool:
         try:
             transcript = self._transcriber.transcribe(recording.wav_bytes)
+        except NothingToPasteError as exc:
+            # Not a failure worth the word "error", but it must still land somewhere the
+            # user can see, or a take that produced nothing looks like a take that hung.
+            self._report_error(str(exc), "მხოლოდ ჩაფიქრების ხმა იყო — ჩასასმელი არაფერია")
+            return False
         except TranscriptionError as exc:
             self._report_error(str(exc), "ტექსტად გარდაქმნა ვერ მოხერხდა — ჩანაწერი შენახულია")
             return False
 
         self._record_usage(transcript, recording.duration_seconds)
-        if not self._paste(transcript.text):
+        if not self._paste(self._compose(transcript.text)):
             return False
 
         self._discard(path)
         return True
+
+    def _compose(self, text: str) -> str:
+        """What actually goes on the clipboard.
+
+        In summary mode the instruction rides in front of the words. Nothing is sent
+        anywhere and nothing is rewritten here — the text is simply addressed to whatever
+        is on the other side of the paste.
+        """
+        if not self._summary_mode or not self._config.summary_instruction:
+            return text
+        return f"{self._config.summary_instruction}\n\n{text}"
 
     def _record_usage(self, transcript: Transcript, measured_seconds: float) -> None:
         """Prefer the duration ElevenLabs billed for — that is what the invoice will say."""

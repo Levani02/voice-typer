@@ -79,6 +79,11 @@ COLLAPSED_WIDTH = 196
 COLLAPSED_HEIGHT = 56
 COLLAPSED_RADIUS = 14
 COLLAPSED_PAD = 16
+# Folded, the strip grows only in the mode that has something to announce. Summary mode
+# changes what lands at the cursor, so it is never allowed to hide behind a folded card.
+COLLAPSED_MODE_EXTRA = 104
+MODE_PILL_WIDTH = 132
+MODE_PILL_HEIGHT = 19
 CARD_MARGIN = 6
 CARD_RADIUS = 18
 BUTTON_RADIUS = 10
@@ -146,6 +151,9 @@ class Controller(Protocol):
     def ui_level(self) -> float: ...
     def ui_hotkey_label(self) -> str: ...
     def ui_device_label(self) -> str: ...
+    def ui_summary_mode(self) -> bool: ...
+    def set_summary_mode(self, on: bool) -> None: ...
+    def toggle_summary_mode(self) -> None: ...
     def usage_text(self) -> str: ...
     def toggle_recording(self) -> None: ...
     def toggle_pause(self) -> None: ...
@@ -211,9 +219,15 @@ class OverlayWindow:
         # `_s`, so the layout does not move when the lettering grows.
         self._content_scale = self._scale * content_scale
 
-        # Folded away or open, restored from wherever the user left it last time.
-        self._collapsed = bool(self._read_saved_state().get("collapsed", False))
+        # Folded away or open, and which mode — restored from where the user left them.
+        saved = self._read_saved_state()
+        self._collapsed = bool(saved.get("collapsed", False))
         self._saved_collapsed = self._collapsed
+        # The window owns the file this was written to, so it restores the value and hands
+        # it to the app, which is the one that decides what goes on the clipboard.
+        self._summary_mode = bool(saved.get("summary_mode", False))
+        self._saved_summary_mode = self._summary_mode
+        controller.set_summary_mode(self._summary_mode)
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
         # shown again can come back unmapped, which is exactly as useful as no window.
@@ -240,7 +254,9 @@ class OverlayWindow:
 
     def _card_width(self) -> int:
         """The card's width in design pixels, for whichever shape it is wearing."""
-        return COLLAPSED_WIDTH if self._collapsed else WINDOW_WIDTH
+        if not self._collapsed:
+            return WINDOW_WIDTH
+        return COLLAPSED_WIDTH + (COLLAPSED_MODE_EXTRA if self._summary_mode else 0)
 
     def _card_height(self) -> int:
         return COLLAPSED_HEIGHT if self._collapsed else WINDOW_HEIGHT
@@ -319,7 +335,7 @@ class OverlayWindow:
         card = (
             margin,
             margin,
-            self._s(COLLAPSED_WIDTH) - margin,
+            self._s(self._card_width()) - margin,
             self._s(COLLAPSED_HEIGHT) - margin,
         )
         radius = self._s(COLLAPSED_RADIUS)
@@ -335,8 +351,17 @@ class OverlayWindow:
         )
         toggle = (right - self._c(20), y - self._c(10), right, y + self._c(10))
         self._paint_fold_button(toggle, pointing_up=True)
+
+        edge = toggle[0] - self._s(10)
+        if self._summary_mode:
+            # Only in the mode that changes what gets pasted. The ordinary mode says
+            # nothing, so anything the folded strip does say is worth reading.
+            pill = (edge - self._s(MODE_PILL_WIDTH * 0.72), y - self._c(9), edge, y + self._c(9))
+            self._paint_mode_button(pill)
+            edge = pill[0] - self._s(8)
+
         self._timer_text = self._canvas.create_text(
-            toggle[0] - self._s(10),
+            edge,
             y,
             text="0:00",
             anchor="e",
@@ -393,6 +418,37 @@ class OverlayWindow:
             anchor="e",
             fill=theme.ACCENT,
             font=self._font(theme.MONO_FAMILY, theme.MONO_PX),
+        )
+
+    def _paint_mode_button(self, box: tuple[int, int, int, int]) -> None:
+        """Which of the two things F9 does, shown as a word and switched by clicking it.
+
+        Both shapes of the card paint this the same way, so there is exactly one place
+        where the mode is drawn and exactly one where it is read.
+        """
+        box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
+        summary = self._summary_mode
+        button = Button(
+            box,
+            self.toggle_summary_mode,
+            theme.BUTTON_TOP,
+            theme.BUTTON_BOTTOM,
+            theme.BUTTON_TOP_HOVER,
+            theme.BUTTON_BOTTOM_HOVER,
+        )
+        radius = self._s(7)
+        button.fill_items = theme.rounded_gradient(
+            self._canvas, box, radius, button.top, button.bottom
+        )
+        theme.rounded_outline(self._canvas, box, radius, ORANGE if summary else theme.BUTTON_BORDER)
+        self._buttons["mode"] = button
+
+        self._canvas.create_text(
+            (box[0] + box[2]) / 2,
+            (box[1] + box[3]) / 2,
+            text="შეჯამება" if summary else "სიტყვები",
+            fill=ORANGE if summary else theme.TEXT_MUTED,
+            font=self._font(theme.UI_FAMILY, theme.FOOTER_PX + 1),
         )
 
     def _paint_fold_button(self, box: tuple[int, int, int, int], *, pointing_up: bool) -> None:
@@ -629,16 +685,19 @@ class OverlayWindow:
         left, right = self._inner_edges(bleed=4)
         y = self._s(FOOTER_BASELINE)
         font = self._font(theme.MONO_FAMILY, theme.FOOTER_PX)
-        # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
-        # for those runs and a longer line collides with the device name on the right.
-        self._canvas.create_text(
+        # The mode lives here rather than in the button row: that row is for what to do
+        # with a recording, and this decides what happens to the words afterwards. It also
+        # has to be readable at a glance, which the footer line is and a fifth square
+        # button next to four others would not be.
+        pill = (
             left,
-            y,
-            text="F9 ჩაწერა · ESC გაუქმება",
-            anchor="w",
-            fill=theme.TEXT_FAINT,
-            font=font,
+            y - self._s(MODE_PILL_HEIGHT / 2),
+            left + self._s(MODE_PILL_WIDTH),
+            y + self._s(MODE_PILL_HEIGHT / 2),
         )
+        self._paint_mode_button(pill)
+        # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
+        # for those runs and a longer line collides with the mode pill on the left.
         self._device_text = self._canvas.create_text(
             right, y, text="", anchor="e", fill=theme.TEXT_FAINT, font=font
         )
@@ -652,6 +711,18 @@ class OverlayWindow:
         existed, so F9 works folded, unfolded, and behind a full-screen application alike.
         """
         self._collapsed = not self._collapsed
+        self._rebuild()
+        self._save_position()
+
+    def toggle_summary_mode(self) -> None:
+        """Switch between pasting the words and pasting them with the instruction.
+
+        The app owns the setting; the window owns showing it and the file it is
+        remembered in. Repainting is not optional — the folded strip is a different width
+        in the two modes, because the mode has to stay visible with the card folded away.
+        """
+        self._controller.toggle_summary_mode()
+        self._summary_mode = self._controller.ui_summary_mode()
         self._rebuild()
         self._save_position()
 
@@ -770,6 +841,9 @@ class OverlayWindow:
             label="ბოლო ჩანაწერის ხელახლა გაგზავნა",
             command=lambda: self._safely(self._controller.retry_last),
         )
+        self._menu.add_command(
+            label="შეჯამების რეჟიმი", command=lambda: self._safely(self.toggle_summary_mode)
+        )
         self._menu.add_command(label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed))
         self._menu.add_separator()
         self._menu.add_command(
@@ -791,7 +865,10 @@ class OverlayWindow:
         listening = self._controller.ui_state() != "disabled"
         self._menu.entryconfig(0, label=self._controller.usage_text())
         self._menu.entryconfig(2, label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"))
-        self._menu.entryconfig(4, label=("გაშლა" if self._collapsed else "ჩაკეცვა"))
+        self._menu.entryconfig(
+            4, label=("✓ შეჯამების რეჟიმი" if self._summary_mode else "შეჯამების რეჟიმი")
+        )
+        self._menu.entryconfig(5, label=("გაშლა" if self._collapsed else "ჩაკეცვა"))
 
     def _show_menu(self, event: tk.Event) -> None:
         self._sync_menu()
@@ -846,16 +923,29 @@ class OverlayWindow:
     def _save_position(self) -> None:
         """Only when something actually changed — a plain click used to rewrite the file."""
         position = (self._root.winfo_x(), self._root.winfo_y())
-        if position == self._saved_position and self._collapsed == self._saved_collapsed:
+        unchanged = (
+            position == self._saved_position
+            and self._collapsed == self._saved_collapsed
+            and self._summary_mode == self._saved_summary_mode
+        )
+        if unchanged:
             return
         try:
             self._position_path.parent.mkdir(parents=True, exist_ok=True)
             self._position_path.write_text(
-                json.dumps({"x": position[0], "y": position[1], "collapsed": self._collapsed}),
+                json.dumps(
+                    {
+                        "x": position[0],
+                        "y": position[1],
+                        "collapsed": self._collapsed,
+                        "summary_mode": self._summary_mode,
+                    }
+                ),
                 encoding="utf-8",
             )
             self._saved_position = position
             self._saved_collapsed = self._collapsed
+            self._saved_summary_mode = self._summary_mode
         except OSError as exc:
             logger.warning("could not remember the window position: %s", exc)
 

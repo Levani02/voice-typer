@@ -56,8 +56,19 @@ DEFAULTS: dict[str, object] = {
     "clipboard_restore_delay_ms": 300,
     "language_code": "kat",
     "model_id": "scribe_v2",
+    # Ask ElevenLabs not to write down the hesitation sounds and false starts it hears.
+    # Only scribe_v2 honours it, which is why the two settings are validated together.
+    "no_verbatim": True,
     "price_per_hour_usd": 0.22,
     "keyterms": [],
+    # A second net, on this side of the wire, for the hesitations the model still writes
+    # down. Whole tokens only. An empty list switches the whole thing off.
+    "filler_words": ["ააა", "ეეე", "ოოო", "მმმ", "ჰმმ", "ემმ", "უუუ", "uh", "um", "erm", "hmm"],
+    # What the summary mode puts in front of the transcript. The app never asks a model
+    # anything — this rides along to whatever is on the other side of the paste.
+    "summary_instruction": (
+        "შემდეგი ნათქვამი გადაწერე მოკლედ და გასწორებულად, საკითხების გამოყოფით:"
+    ),
     "prune_takes_after_days": 7,
     "window_scale": 1.0,
     "content_scale": 1.0,
@@ -84,6 +95,14 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
 # cost several times more than a short dictation. Rejected at startup rather than silently
 # trimmed, so the user is not billed for a setting they thought was in effect.
 MAX_KEYTERMS = 100
+
+# Far past any language's stock of hesitation noises. A longer list is a mistake, and
+# every entry widens a pattern that runs on every single transcript.
+MAX_FILLER_WORDS = 50
+
+# `no_verbatim` is documented as a scribe_v2 feature. Sending it with another model is not
+# quietly ignored — it is a request the server may reject, in the middle of a dictation.
+NO_VERBATIM_MODELS = ("scribe_v2",)
 
 
 class ConfigError(Exception):
@@ -114,8 +133,11 @@ class Config:
     clipboard_restore_delay_ms: int
     language_code: str
     model_id: str
+    no_verbatim: bool
     price_per_hour_usd: float
     keyterms: tuple[str, ...]
+    filler_words: tuple[str, ...]
+    summary_instruction: str
     prune_takes_after_days: int
     window_scale: float
     content_scale: float
@@ -156,10 +178,11 @@ def _validate_ranges(values: dict[str, object]) -> None:
                 f"config.json: '{name}' must be between {low} and {high}, got {value}"
             )
 
-    if not isinstance(values["restore_clipboard"], bool):
-        raise ConfigError("config.json: 'restore_clipboard' must be true or false")
+    for name in ("restore_clipboard", "no_verbatim"):
+        if not isinstance(values[name], bool):
+            raise ConfigError(f"config.json: '{name}' must be true or false")
 
-    for name in ("hotkey", "language_code", "model_id"):
+    for name in ("hotkey", "language_code", "model_id", "summary_instruction"):
         if not isinstance(values[name], str) or not values[name]:
             raise ConfigError(f"config.json: '{name}' must be a non-empty text value")
 
@@ -168,6 +191,8 @@ def _validate_ranges(values: dict[str, object]) -> None:
         raise ConfigError("config.json: 'input_device' must be null, a number, or a device name")
 
     _validate_keyterms(values["keyterms"])
+    _validate_filler_words(values["filler_words"])
+    _validate_no_verbatim(values)
     _validate_hotkey(str(values["hotkey"]))
 
 
@@ -197,6 +222,50 @@ def _validate_keyterms(keyterms: object) -> None:
             f"config.json: 'keyterms' has {len(keyterms)} entries. Keep it to {MAX_KEYTERMS} — "
             f"above that ElevenLabs charges a 20-second minimum for every recording, which "
             f"would cost several times more per sentence."
+        )
+
+
+def _validate_filler_words(filler_words: object) -> None:
+    """The hesitation sounds to drop. Every entry is a shape, not a spelling.
+
+    Two letters minimum, and no spaces. A one-letter entry would match a Georgian list
+    marker or an initial standing on its own, and delete it silently — the exact class of
+    failure this app must never have.
+    """
+    if not isinstance(filler_words, list) or any(
+        not isinstance(word, str) for word in filler_words
+    ):
+        raise ConfigError(
+            'config.json: \'filler_words\' must be a list of words, for example ["ააა", "მმმ"]'
+        )
+    for word in filler_words:
+        stripped = word.strip()
+        if len(stripped) < 2 or " " in stripped:
+            raise ConfigError(
+                f"config.json: 'filler_words' entry {word!r} is unusable — write at least two "
+                f'letters and no spaces, for example "ააა"'
+            )
+    if len(filler_words) > MAX_FILLER_WORDS:
+        raise ConfigError(
+            f"config.json: 'filler_words' has {len(filler_words)} entries. Keep it to "
+            f"{MAX_FILLER_WORDS} — every entry is checked against every transcript."
+        )
+
+
+def _validate_no_verbatim(values: dict[str, object]) -> None:
+    """Filler removal is a scribe_v2 feature; asking for it elsewhere is a broken request.
+
+    Caught at startup rather than mid-dictation: an HTTP error arriving after someone has
+    already spoken is the one moment this app must not fail.
+    """
+    if not values["no_verbatim"]:
+        return
+    model = str(values["model_id"])
+    if model not in NO_VERBATIM_MODELS:
+        raise ConfigError(
+            f"config.json: 'no_verbatim' only works with {NO_VERBATIM_MODELS[0]}, but "
+            f'\'model_id\' is {model!r}. Either set "model_id": "{NO_VERBATIM_MODELS[0]}" '
+            f'or set "no_verbatim": false.'
         )
 
 
@@ -299,8 +368,11 @@ def load_config(config_path: Path | None = None) -> Config:
         clipboard_restore_delay_ms=int(values["clipboard_restore_delay_ms"]),
         language_code=str(values["language_code"]),
         model_id=str(values["model_id"]),
+        no_verbatim=bool(values["no_verbatim"]),
         price_per_hour_usd=float(values["price_per_hour_usd"]),
         keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
+        filler_words=tuple(values["filler_words"]),  # type: ignore[arg-type]
+        summary_instruction=str(values["summary_instruction"]).strip(),
         prune_takes_after_days=int(values["prune_takes_after_days"]),
         window_scale=float(values["window_scale"]),
         content_scale=float(values["content_scale"]),

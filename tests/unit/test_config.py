@@ -159,3 +159,84 @@ def test_transcript_logging_is_off_unless_explicitly_enabled(monkeypatch, tmp_pa
     assert load_config(tmp_path / "absent.json").log_transcripts is True
     monkeypatch.setenv("LOG_TRANSCRIPTS", "yes")  # anything but "true" means off
     assert load_config(tmp_path / "absent.json").log_transcripts is False
+
+
+# ------------------------------------------------------- hesitation sounds and modes
+
+
+def test_no_verbatim_is_on_by_default(tmp_path):
+    assert load_config(tmp_path / "absent.json").no_verbatim is True
+
+
+def test_no_verbatim_can_be_switched_off(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"no_verbatim": False}))
+    assert cfg.no_verbatim is False
+
+
+def test_no_verbatim_must_be_true_or_false(tmp_path):
+    with pytest.raises(ConfigError, match="no_verbatim"):
+        load_config(write_config(tmp_path, {"no_verbatim": "yes"}))
+
+
+def test_no_verbatim_with_another_model_is_rejected_before_a_recording_is_made(tmp_path):
+    """An unsupported parameter would come back as an HTTP error after the user has
+    already spoken. That is the one moment this app must not fail."""
+    with pytest.raises(ConfigError, match="scribe_v2"):
+        load_config(write_config(tmp_path, {"model_id": "scribe_v1", "no_verbatim": True}))
+
+
+def test_another_model_is_fine_when_no_verbatim_is_off(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"model_id": "scribe_v1", "no_verbatim": False}))
+    assert cfg.model_id == "scribe_v1"
+
+
+def test_filler_words_have_a_georgian_default(tmp_path):
+    words = load_config(tmp_path / "absent.json").filler_words
+    assert "ააა" in words and "მმმ" in words
+
+
+def test_filler_words_are_passed_through(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"filler_words": ["ააა", "hmm"]}))
+    assert cfg.filler_words == ("ააა", "hmm")
+
+
+def test_filler_removal_is_switched_off_by_an_empty_list(tmp_path):
+    assert load_config(write_config(tmp_path, {"filler_words": []})).filler_words == ()
+
+
+def test_a_one_letter_filler_is_rejected_because_it_would_delete_real_words(tmp_path):
+    """A single "ა" would match a Georgian list marker standing on its own."""
+    with pytest.raises(ConfigError, match="filler_words"):
+        load_config(write_config(tmp_path, {"filler_words": ["ა"]}))
+
+
+def test_a_filler_with_a_space_in_it_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="filler_words"):
+        load_config(write_config(tmp_path, {"filler_words": ["ააა მმმ"]}))
+
+
+def test_filler_words_must_be_a_list_of_words(tmp_path):
+    with pytest.raises(ConfigError, match="filler_words"):
+        load_config(write_config(tmp_path, {"filler_words": "ააა"}))
+    with pytest.raises(ConfigError, match="filler_words"):
+        load_config(write_config(tmp_path, {"filler_words": [1, 2]}))
+
+
+def test_too_many_filler_words_is_rejected(tmp_path):
+    too_many = [f"აა{index}" for index in range(config_module.MAX_FILLER_WORDS + 1)]
+    with pytest.raises(ConfigError, match="filler_words"):
+        load_config(write_config(tmp_path, {"filler_words": too_many}))
+
+
+def test_the_summary_instruction_has_a_georgian_default(tmp_path):
+    assert load_config(tmp_path / "absent.json").summary_instruction
+
+
+def test_the_summary_instruction_can_be_rewritten(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"summary_instruction": "შეაჯამე ეს:"}))
+    assert cfg.summary_instruction == "შეაჯამე ეს:"
+
+
+def test_an_empty_summary_instruction_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="summary_instruction"):
+        load_config(write_config(tmp_path, {"summary_instruction": ""}))
