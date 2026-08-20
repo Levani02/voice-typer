@@ -36,6 +36,28 @@ class RecorderError(Exception):
     """The microphone could not be opened or read. The message is shown to the user."""
 
 
+def refresh_devices() -> None:
+    """Ask the system for its microphones again, from scratch.
+
+    PortAudio reads the machine's audio devices once, when it starts up, and never looks
+    again. Anything paired afterwards is invisible to it — AirPods connected while the app
+    was already running are the case that brought this in: macOS makes them the default
+    input, PortAudio still points at the microphone that used to be default, and the take
+    either opens a device that is no longer there ("could not open the microphone") or
+    quietly records from the laptop's own microphone while the user speaks into their ears.
+
+    Restarting PortAudio is the only way to see the list as it is now; there is no
+    rescan API. It costs a few milliseconds and may only happen between takes — doing it
+    with a stream open would pull the device out from under a recording in progress.
+    """
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception as exc:
+        # Not fatal: the stale list is what was used until now, and it usually works.
+        logger.warning("could not refresh the list of microphones: %s", exc)
+
+
 @dataclass(frozen=True)
 class Recording:
     """A finished capture, ready to upload."""
@@ -145,6 +167,9 @@ class Recorder:
             # would silently override config.json for the rest of the session.
             self._active_sample_rate = None
             self._paused = False
+        # Between takes, and only here: the list must not be rebuilt under a live stream,
+        # and a take that is resuming has to reopen the very device it began on.
+        refresh_devices()
         self._open_stream()
 
     def pause(self) -> None:
@@ -242,7 +267,16 @@ class Recorder:
             self._active_sample_rate = wanted
             self._segment_started_at = time.monotonic()
             self._last_audio_at = self._segment_started_at
-        logger.info("recording started (device=%s, %d Hz)", self._device, wanted)
+        logger.info("recording started (%s, %d Hz)", self._device_name(), wanted)
+
+    def _device_name(self) -> str:
+        """Which microphone this actually is — the log's only clue when the wrong one
+        was open. `None` means "whatever the system calls default", which is exactly the
+        thing that changes when headphones connect, so it is worth resolving."""
+        try:
+            return str(sd.query_devices(self._device, "input")["name"])
+        except Exception:
+            return f"device={self._device}"
 
     def _wanted_rate(self) -> int:
         """The configured rate, unless this take already settled on another one.

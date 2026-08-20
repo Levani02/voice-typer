@@ -114,6 +114,12 @@ def window(shared_window):
     controller.level = 0.5
     controller.calls.clear()
     overlay._levels = [0.0] * BAR_COUNT
+    if overlay._collapsed:
+        # One window serves the whole module, so a test that folded it must not hand the
+        # next one a card with no buttons on it.
+        overlay._collapsed = False
+        overlay._rebuild()
+        overlay._root.update_idletasks()  # or the next test measures the folded size
     overlay._update()
     controller.calls.clear()
     return overlay, controller, path
@@ -400,3 +406,68 @@ def test_colours_blend_and_mix_within_range():
     assert theme.mix("#000000", "#ffffff", 0.0) == "#000000"
     assert theme.mix("#000000", "#ffffff", 1.0) == "#ffffff"
     assert theme.to_hex((300, -20, 128)) == "#ff0080"
+
+
+# --------------------------------------------------------------------------- folding
+
+
+def test_folding_the_card_away_leaves_only_the_light_and_the_clock(window):
+    overlay, _, _ = window
+    full_width = overlay._root.winfo_width()
+
+    click(overlay, "fold")
+    overlay._root.update_idletasks()
+
+    assert overlay._collapsed
+    assert overlay._root.winfo_width() < full_width
+    assert set(overlay._buttons) == {"fold"}  # nothing left that needs looking at
+
+
+def test_unfolding_brings_every_control_back(window):
+    overlay, _, _ = window
+    full_width = overlay._root.winfo_width()
+
+    click(overlay, "fold")
+    click(overlay, "fold")
+    overlay._root.update_idletasks()
+
+    assert not overlay._collapsed
+    assert overlay._root.winfo_width() == full_width
+    assert "record" in overlay._buttons
+
+
+@pytest.mark.parametrize("state", sorted(APPEARANCE))
+def test_every_state_paints_while_folded(window, state):
+    """The folded card carries none of the items `_update` normally writes to. Reaching
+    for one of them would raise fourteen times a second, into a log nobody reads."""
+    overlay, controller, _ = window
+    click(overlay, "fold")
+
+    controller.state = state
+    overlay._update()
+
+    assert overlay._collapsed
+
+
+def test_the_folded_choice_is_remembered(window):
+    overlay, _, path = window
+
+    click(overlay, "fold")
+
+    assert json.loads(path.read_text(encoding="utf-8"))["collapsed"] is True
+
+
+def test_unfolding_in_the_corner_keeps_the_card_on_the_screen(window):
+    """The window opens in the bottom-right corner, which is the one place where growing
+    it back to full width would push most of it off the edge."""
+    overlay, _, _ = window
+    click(overlay, "fold")
+    overlay._root.update_idletasks()
+    overlay._root.geometry(f"+{overlay._root.winfo_screenwidth() - 40}+100")
+    overlay._root.update_idletasks()
+
+    click(overlay, "fold")
+    overlay._root.update_idletasks()
+
+    right_edge = overlay._root.winfo_x() + overlay._root.winfo_width()
+    assert right_edge <= overlay._root.winfo_screenwidth()

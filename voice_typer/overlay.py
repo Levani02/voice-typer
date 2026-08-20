@@ -72,6 +72,13 @@ REFRESH_MS = 70  # fast enough for the level bars to look alive
 # Design pixels at 100% scaling. Nothing here is used raw — see `_s`.
 WINDOW_WIDTH = 520
 WINDOW_HEIGHT = 176
+# Collapsed, the card keeps only what someone glances at while dictating: is it listening,
+# and for how long. Every control goes away — the hotkey does not, which is the whole
+# point of being allowed to fold the window out of the way.
+COLLAPSED_WIDTH = 196
+COLLAPSED_HEIGHT = 56
+COLLAPSED_RADIUS = 14
+COLLAPSED_PAD = 16
 CARD_MARGIN = 6
 CARD_RADIUS = 18
 BUTTON_RADIUS = 10
@@ -204,14 +211,18 @@ class OverlayWindow:
         # `_s`, so the layout does not move when the lettering grows.
         self._content_scale = self._scale * content_scale
 
+        # Folded away or open, restored from wherever the user left it last time.
+        self._collapsed = bool(self._read_saved_state().get("collapsed", False))
+        self._saved_collapsed = self._collapsed
+
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
         # shown again can come back unmapped, which is exactly as useful as no window.
         self._root = tk.Tk()
         self._build_window()
         self._canvas = tk.Canvas(
             self._root,
-            width=self._s(WINDOW_WIDTH),
-            height=self._s(WINDOW_HEIGHT),
+            width=self._s(self._card_width()),
+            height=self._s(self._card_height()),
             highlightthickness=0,
             bg=self._backdrop,
         )
@@ -221,9 +232,18 @@ class OverlayWindow:
         self._bind_events()
         self._root.update()
         window_platform.make_non_activating(self._root)
+        # After `update`, because there is no NSWindow to configure until Tk has made one.
+        window_platform.float_over_full_screen(self._root)
         self._refresh()
 
     # ------------------------------------------------------------------------ measuring
+
+    def _card_width(self) -> int:
+        """The card's width in design pixels, for whichever shape it is wearing."""
+        return COLLAPSED_WIDTH if self._collapsed else WINDOW_WIDTH
+
+    def _card_height(self) -> int:
+        return COLLAPSED_HEIGHT if self._collapsed else WINDOW_HEIGHT
 
     def _s(self, value: float) -> int:
         """A design measurement in real screen pixels. Use for anything positional."""
@@ -261,12 +281,16 @@ class OverlayWindow:
         self._root.configure(bg=self._backdrop)
         x, y = self._restore_position()
         self._saved_position = (x, y)
-        self._root.geometry(f"{self._s(WINDOW_WIDTH)}x{self._s(WINDOW_HEIGHT)}+{x}+{y}")
+        self._root.geometry(f"{self._s(self._card_width())}x{self._s(self._card_height())}+{x}+{y}")
         self._root.protocol("WM_DELETE_WINDOW", lambda: self._safely(self._controller.quit))
 
     # ------------------------------------------------------------------------- painting
 
     def _paint_card(self) -> None:
+        if self._collapsed:
+            self._paint_collapsed_card()
+            return
+
         margin = self._s(CARD_MARGIN)
         card = (
             margin,
@@ -283,6 +307,42 @@ class OverlayWindow:
         self._paint_meter()
         self._paint_buttons()
         self._paint_footer()
+
+    def _paint_collapsed_card(self) -> None:
+        """The folded strip: the state light, the running time, and the way back.
+
+        Deliberately not a smaller copy of the card. Everything that was left out is
+        something the user cannot act on without looking — and someone who folded the
+        window away is not looking at it.
+        """
+        margin = self._s(CARD_MARGIN)
+        card = (
+            margin,
+            margin,
+            self._s(COLLAPSED_WIDTH) - margin,
+            self._s(COLLAPSED_HEIGHT) - margin,
+        )
+        radius = self._s(COLLAPSED_RADIUS)
+        theme.rounded_gradient(self._canvas, card, radius, theme.CARD_TOP, theme.CARD_BOTTOM)
+        theme.rounded_outline(self._canvas, card, radius, theme.CARD_BORDER)
+
+        y = round((card[1] + card[3]) / 2)  # a gradient is painted row by row: whole pixels
+        left = card[0] + self._s(COLLAPSED_PAD)
+        right = card[2] - self._s(COLLAPSED_PAD)
+
+        self._dot_items = theme.glow_dot(
+            self._canvas, left + self._c(5), y, self._c(5), theme.ACCENT, theme.CARD_TOP
+        )
+        toggle = (right - self._c(20), y - self._c(10), right, y + self._c(10))
+        self._paint_fold_button(toggle, pointing_up=True)
+        self._timer_text = self._canvas.create_text(
+            toggle[0] - self._s(10),
+            y,
+            text="0:00",
+            anchor="e",
+            fill=theme.ACCENT,
+            font=self._font(theme.MONO_FAMILY, theme.MONO_PX),
+        )
 
     def _inner_edges(self, bleed: int = 0) -> tuple[int, int]:
         left = self._s(CARD_MARGIN + PAD - bleed)
@@ -305,9 +365,15 @@ class OverlayWindow:
             font=self._font(theme.UI_FAMILY, theme.STATUS_PX),
         )
 
+        # The fold control sits in the corner rather than in the button row: that row is
+        # for what to do with a recording, and folding the window is not one of those.
+        fold = (right - self._c(20), y - self._c(10), right, y + self._c(10))
+        self._paint_fold_button(fold, pointing_up=False)
+
         # The badge is sized with the lettering inside it rather than with the card, or
         # a larger "F9" would push against its own border.
-        badge = (right - self._c(34), y - self._c(10), right, y + self._c(10))
+        badge_right = fold[0] - self._s(10)
+        badge = (badge_right - self._c(34), y - self._c(10), badge_right, y + self._c(10))
         theme.rounded_gradient(self._canvas, badge, self._c(5), "#26292c", "#1a1d20")
         theme.rounded_outline(self._canvas, badge, self._c(5), "#3a3e43")
         self._badge_text = self._canvas.create_text(
@@ -328,6 +394,35 @@ class OverlayWindow:
             fill=theme.ACCENT,
             font=self._font(theme.MONO_FAMILY, theme.MONO_PX),
         )
+
+    def _paint_fold_button(self, box: tuple[int, int, int, int], *, pointing_up: bool) -> None:
+        """The one control both shapes of the card have: fold away, or open back up."""
+        box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
+        button = Button(
+            box,
+            self.toggle_collapsed,
+            theme.BUTTON_TOP,
+            theme.BUTTON_BOTTOM,
+            theme.BUTTON_TOP_HOVER,
+            theme.BUTTON_BOTTOM_HOVER,
+        )
+        radius = self._s(6)
+        button.fill_items = theme.rounded_gradient(
+            self._canvas, box, radius, button.top, button.bottom
+        )
+        theme.rounded_outline(self._canvas, box, radius, theme.BUTTON_BORDER)
+        self._buttons["fold"] = button
+
+        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        arm = self._c(3.8)
+        rise = self._c(2.2)
+        stroke = max(1, self._c(1.5))
+        tip_y = y - rise if pointing_up else y + rise
+        base_y = y + rise if pointing_up else y - rise
+        for side in (-arm, arm):
+            self._canvas.create_line(
+                x + side, base_y, x, tip_y, fill=theme.TEXT_MUTED, width=stroke
+            )
 
     def _paint_meter(self) -> None:
         left, right = self._inner_edges(bleed=4)
@@ -393,7 +488,10 @@ class OverlayWindow:
 
         radius = self._s(BUTTON_RADIUS)
         borders = {"cancel": theme.CANCEL_BORDER, "power": theme.POWER_BORDER}
-        for name, button in self._buttons.items():
+        # Only the four painted here. The fold control is already drawn, with its own
+        # size and its own chevron, and painting it a second time would bury the chevron.
+        for name in ("record", "pause", "cancel", "power"):
+            button = self._buttons[name]
             button.fill_items = theme.rounded_gradient(
                 self._canvas, button.box, radius, button.top, button.bottom
             )
@@ -545,6 +643,48 @@ class OverlayWindow:
             right, y, text="", anchor="e", fill=theme.TEXT_FAINT, font=font
         )
 
+    # ---------------------------------------------------------------------- folding away
+
+    def toggle_collapsed(self) -> None:
+        """Fold the card down to a strip, or open it back up.
+
+        Nothing about recording changes: the hotkey listener never knew this window
+        existed, so F9 works folded, unfolded, and behind a full-screen application alike.
+        """
+        self._collapsed = not self._collapsed
+        self._rebuild()
+        self._save_position()
+
+    def _rebuild(self) -> None:
+        """Throw the drawing away and paint the other shape at the same corner.
+
+        Everything the canvas handed out — item ids, buttons, the meter's bars — belongs
+        to the drawing that is being deleted, so every one of them is reset here. A stale
+        id is not an error in Tk; it is a silent no-op, which is how a window ends up
+        looking frozen.
+        """
+        self._canvas.delete("all")
+        self._buttons = {}
+        self._bars = []
+        self._levels = [0.0] * BAR_COUNT
+        self._meter_settled = False
+        self._meter_colour = ""
+        self._pressed = None
+        self._drag_origin = None
+
+        width = self._s(self._card_width())
+        height = self._s(self._card_height())
+        # Unfolding at the bottom-right corner would otherwise push most of the card off
+        # the screen — which is exactly where this window is by default.
+        left, top, right, bottom = self._desktop_bounds()
+        x = max(left, min(self._root.winfo_x(), right - width))
+        y = max(top, min(self._root.winfo_y(), bottom - height))
+
+        self._canvas.config(width=width, height=height)
+        self._root.geometry(f"{width}x{height}+{x}+{y}")
+        self._paint_card()
+        self._update()
+
     # -------------------------------------------------------------------------- events
 
     def _bind_events(self) -> None:
@@ -630,6 +770,7 @@ class OverlayWindow:
             label="ბოლო ჩანაწერის ხელახლა გაგზავნა",
             command=lambda: self._safely(self._controller.retry_last),
         )
+        self._menu.add_command(label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed))
         self._menu.add_separator()
         self._menu.add_command(
             label="ლოგების საქაღალდე", command=lambda: self._safely(self._controller.open_logs)
@@ -650,6 +791,7 @@ class OverlayWindow:
         listening = self._controller.ui_state() != "disabled"
         self._menu.entryconfig(0, label=self._controller.usage_text())
         self._menu.entryconfig(2, label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"))
+        self._menu.entryconfig(4, label=("გაშლა" if self._collapsed else "ჩაკეცვა"))
 
     def _show_menu(self, event: tk.Event) -> None:
         self._sync_menu()
@@ -672,18 +814,27 @@ class OverlayWindow:
             return bounds
         return 0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight()
 
+    def _read_saved_state(self) -> dict:
+        """Whatever was written last time, or nothing. Never raises: a file that cannot
+        be read means the window opens in its default corner, which is not a failure."""
+        try:
+            saved = json.loads(self._position_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return saved if isinstance(saved, dict) else {}
+
     def _restore_position(self) -> tuple[int, int]:
         """Put the window back where the user left it, if that is still on screen."""
-        width, height = self._s(WINDOW_WIDTH), self._s(WINDOW_HEIGHT)
+        width, height = self._s(self._card_width()), self._s(self._card_height())
         margin = self._s(EDGE_MARGIN)
         default = (
             self._root.winfo_screenwidth() - width - margin,
             self._root.winfo_screenheight() - height - self._s(TASKBAR_ALLOWANCE),
         )
+        saved = self._read_saved_state()
         try:
-            saved = json.loads(self._position_path.read_text(encoding="utf-8"))
             x, y = int(saved["x"]), int(saved["y"])
-        except (OSError, ValueError, KeyError, TypeError):
+        except (KeyError, ValueError, TypeError):
             return default
 
         # Enough of the card must remain reachable to grab and drag it back.
@@ -693,16 +844,18 @@ class OverlayWindow:
         return (x, y) if on_screen_x and on_screen_y else default
 
     def _save_position(self) -> None:
-        """Only when it actually moved — a plain click used to rewrite the file."""
+        """Only when something actually changed — a plain click used to rewrite the file."""
         position = (self._root.winfo_x(), self._root.winfo_y())
-        if position == self._saved_position:
+        if position == self._saved_position and self._collapsed == self._saved_collapsed:
             return
         try:
             self._position_path.parent.mkdir(parents=True, exist_ok=True)
             self._position_path.write_text(
-                json.dumps({"x": position[0], "y": position[1]}), encoding="utf-8"
+                json.dumps({"x": position[0], "y": position[1], "collapsed": self._collapsed}),
+                encoding="utf-8",
             )
             self._saved_position = position
+            self._saved_collapsed = self._collapsed
         except OSError as exc:
             logger.warning("could not remember the window position: %s", exc)
 
@@ -726,12 +879,17 @@ class OverlayWindow:
         look = APPEARANCE.get(state, APPEARANCE["idle"])
 
         theme.recolour_glow_dot(self._canvas, self._dot_items, look.dot, theme.CARD_TOP)
-        self._canvas.itemconfig(self._status_text, text=look.words)
         self._canvas.itemconfig(
             self._timer_text,
             text=_format_elapsed(self._controller.ui_elapsed_seconds()),
             fill=look.timer,
         )
+        if self._collapsed:
+            # Everything below belongs to items the folded card never painted. Reaching
+            # for one of them would raise on every tick, fourteen times a second.
+            return
+
+        self._canvas.itemconfig(self._status_text, text=look.words)
         self._canvas.itemconfig(self._badge_text, text=self._controller.ui_hotkey_label())
         self._canvas.itemconfig(self._device_text, text=self._controller.ui_device_label())
 

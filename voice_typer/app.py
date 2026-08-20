@@ -186,6 +186,10 @@ class App:
             self._report_error(str(exc), "მიკროფონი ვერ ჩაირთო")
             return
 
+        # The device list is rebuilt at the start of every take now, so the name in the
+        # footer can go out of date the moment headphones connect. Ask for it again.
+        self._device_label = None
+
         self._settle_state()
         self._schedule_auto_stop()
 

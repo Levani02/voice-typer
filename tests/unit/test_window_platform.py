@@ -113,3 +113,56 @@ def test_nothing_is_attempted_on_an_unknown_system(pretend):
 
     window_platform.make_non_activating(Watched())
     assert not Watched.touched
+
+
+def test_windows_needs_nothing_to_survive_a_full_screen_application(pretend):
+    """A topmost tool window already draws over a maximised or full-screen window there.
+
+    The check matters because the macOS path talks to AppKit: running it on the wrong
+    system would import a framework that is not installed, over a cosmetic setting.
+    """
+    pretend("windows")
+
+    class Watched:
+        touched = False
+
+        @property
+        def tk(self):
+            Watched.touched = True
+            raise AssertionError("should never be reached")
+
+    window_platform.float_over_full_screen(Watched())
+    assert not Watched.touched
+
+
+def test_a_window_that_cannot_be_put_in_every_space_is_left_where_it_is(pretend, monkeypatch):
+    """Hiding behind a full-screen Chrome is a nuisance; taking the app down is not."""
+    pretend("macos")
+
+    def refuse(_window):
+        raise RuntimeError("no NSWindow yet")
+
+    monkeypatch.setattr(window_platform, "_float_over_spaces_macos", refuse)
+    window_platform.float_over_full_screen(object())  # must not raise
+
+
+def test_the_spaces_call_refuses_to_run_off_the_main_thread(pretend):
+    """AppKit does not raise when it is called from the wrong thread — it kills the
+    process. This app has been killed that way once already, from `injector.py`."""
+    import threading
+
+    pretend("macos")
+    failed: list[BaseException] = []
+
+    def call_it():
+        try:
+            window_platform._float_over_spaces_macos(object())
+        except BaseException as exc:
+            failed.append(exc)
+
+    worker = threading.Thread(target=call_it)
+    worker.start()
+    worker.join()
+
+    assert isinstance(failed[0], RuntimeError)
+    assert "main thread" in str(failed[0])

@@ -45,6 +45,16 @@ _SM_CYVIRTUALSCREEN = 79
 # The Tk colour name that means "let the desktop show through" on Aqua.
 _MACOS_TRANSPARENT = "systemTransparent"
 
+# NSWindow collection behaviour, written out rather than imported: the names live in
+# different pyobjc modules depending on the version, and a wrong import here would take
+# the window down over a cosmetic setting.
+_NS_ALL_SPACES = 1 << 0  # NSWindowCollectionBehaviorCanJoinAllSpaces
+_NS_STATIONARY = 1 << 4  # NSWindowCollectionBehaviorStationary — do not slide with a Space
+_NS_FULLSCREEN_AUXILIARY = 1 << 8  # NSWindowCollectionBehaviorFullScreenAuxiliary
+# NSStatusWindowLevel. Tk's own "topmost" is NSFloatingWindowLevel, which a full-screen
+# window sits above; this is the level the menu bar uses.
+_NS_STATUS_LEVEL = 25
+
 
 def display_scale() -> float:
     """How much larger than 100% the display is set to run.
@@ -155,6 +165,50 @@ def make_non_activating(window: tk.Misc) -> None:
             _make_non_activating_macos(window)
     except Exception as exc:
         logger.warning("could not make the window non-activating: %s", exc)
+
+
+def _float_over_spaces_macos(window: tk.Misc) -> None:
+    """Put the window in every Space, including the one a full-screen application owns.
+
+    Must run on the main thread. `NSApplication` asserts that it is on the main queue and
+    an assertion inside AppKit does not raise — it kills the process. That is the same
+    rule that once killed this app from `injector.py`, so the check below is not decoration.
+    """
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("NSApplication may only be touched on the main thread")
+
+    import AppKit
+
+    windows = AppKit.NSApplication.sharedApplication().windows()
+    if not windows:
+        raise RuntimeError("the application has no window yet")
+    behaviour = _NS_ALL_SPACES | _NS_STATIONARY | _NS_FULLSCREEN_AUXILIARY
+    for ns_window in windows:
+        ns_window.setCollectionBehavior_(behaviour)
+        ns_window.setLevel_(_NS_STATUS_LEVEL)
+
+
+def float_over_full_screen(window: tk.Misc) -> None:
+    """Keep the recorder visible when another application goes full screen.
+
+    A full-screen application on macOS gets a Space of its own, and an ordinary window
+    stays behind in the Space it was created in — so the recorder vanished the moment
+    Chrome went full screen and only came back when something forced the window to be
+    laid out again. A window has to say that it belongs in every Space; saying it is
+    merely "always on top" is not enough, because the top of one Space is not the top of
+    another.
+
+    Windows needs nothing here: a topmost tool window already draws over a maximised or
+    full-screen window.
+    """
+    if not IS_MACOS:
+        return
+    try:
+        _float_over_spaces_macos(window)
+    except Exception as exc:
+        logger.warning("the window may hide behind a full-screen application: %s", exc)
 
 
 def apply_transparency(root: tk.Tk, key_colour: str, fallback_colour: str) -> str:

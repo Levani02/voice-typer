@@ -62,9 +62,22 @@ def fake_audio(monkeypatch):
         # does to a rate the hardware cannot do — reject it rather than resample.
         native_rate = 48_000
         unsupported_rates: ClassVar[set[int]] = set()
+        # Everything PortAudio was asked to do, in order. Restarting it is how a
+        # microphone that appeared after launch — AirPods, usually — becomes visible at
+        # all, and it is only safe between takes.
+        events: ClassVar[list[str]] = []
+
+        @staticmethod
+        def _terminate():
+            FakeSoundDevice.events.append("terminate")
+
+        @staticmethod
+        def _initialize():
+            FakeSoundDevice.events.append("initialize")
 
         @staticmethod
         def InputStream(**kwargs):
+            FakeSoundDevice.events.append("open")
             if "open" in fail_on:
                 raise OSError("no such device")
             if kwargs.get("samplerate") in FakeSoundDevice.unsupported_rates:
@@ -463,3 +476,31 @@ def test_a_stream_that_cannot_start_is_closed(fake_audio):
 
     assert len(opened) == 2  # the configured rate, then the device's own
     assert all(stream.closed for stream in opened)  # neither one still holds the device
+
+
+def test_a_new_take_asks_the_system_for_its_microphones_again(fake_audio):
+    """AirPods connected after launch are invisible until PortAudio is restarted.
+
+    Without this the take opens whatever was default when the app started: on macOS that
+    is an error — the user sees "microphone could not be turned on" — and on a machine
+    where the old device is still there it is worse, because it records the room while
+    the user speaks into their headphones.
+    """
+    recorder = Recorder(SAMPLE_RATE)
+
+    recorder.start()
+
+    assert recorder_module.sd.events == ["terminate", "initialize", "open"]
+
+
+def test_resuming_does_not_rebuild_the_device_list(fake_audio):
+    """Mid-take, the list must be left alone: rebuilding it would pull the microphone out
+    from under a recording that is only paused, and the second half of the sentence with it."""
+    recorder = Recorder(SAMPLE_RATE)
+    recorder.start()
+    recorder.pause()
+    recorder_module.sd.events.clear()
+
+    recorder.resume()
+
+    assert recorder_module.sd.events == ["open"]
