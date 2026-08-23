@@ -63,7 +63,10 @@ DEFAULTS: dict[str, object] = {
     "keyterms": [],
     # A second net, on this side of the wire, for the hesitations the model still writes
     # down. Whole tokens only. An empty list switches the whole thing off.
-    "filler_words": ["ააა", "ეეე", "ოოო", "მმმ", "ჰმმ", "ემმ", "უუუ", "uh", "um", "erm", "hmm"],
+    # Georgian only. Latin entries would reach for capitalised words that are somebody's
+    # name — "Um" is a surname — and this app transcribes Georgian. Add them by hand if
+    # your dictation really needs them.
+    "filler_words": ["ააა", "ეეე", "ოოო", "მმმ", "ჰმმ", "ემმ", "უუუ"],
     # What the summary mode puts in front of the transcript. The app never asks a model
     # anything — this rides along to whatever is on the other side of the paste.
     "summary_instruction": (

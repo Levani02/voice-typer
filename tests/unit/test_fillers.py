@@ -24,8 +24,17 @@ def test_an_elongated_filler_goes_however_many_letters_it_has():
     assert text == "მე არ ვიცი"
 
 
-def test_a_shortened_filler_still_matches_because_the_letter_is_doubled():
-    text, _ = strip_fillers("მე მმ არ ვიცი", GEORGIAN)
+def test_a_two_letter_abbreviation_is_not_a_hesitation():
+    """ "მმ" is millimetre. A filler written as three letters must need three to match,
+    or every dictated measurement silently loses its unit — and a number without its
+    unit reads as perfectly correct."""
+    text, removed = strip_fillers("ზომები: 10 მმ, 20 მმ, 30 მმ", GEORGIAN)
+    assert text == "ზომები: 10 მმ, 20 მმ, 30 მმ"
+    assert removed == 0
+
+
+def test_a_filler_still_matches_when_it_is_written_exactly_as_configured():
+    text, _ = strip_fillers("მე მმმ არ ვიცი", GEORGIAN)
     assert text == "მე არ ვიცი"
 
 
@@ -40,10 +49,37 @@ def test_a_full_stop_after_a_filler_stays_on_the_sentence():
     assert text == "ეს ყველაფერია."
 
 
-def test_a_latin_filler_goes_whatever_its_capitalisation():
-    text, removed = strip_fillers("So Uh maybe UM later", MIXED)
+def test_a_latin_filler_goes_at_the_start_of_a_sentence_too():
+    """Only the first letter may be capital — that is a sentence opening, not an acronym."""
+    text, removed = strip_fillers("So Uh maybe uh later", MIXED)
     assert text == "So maybe later"
     assert removed == 2
+
+
+def test_an_all_capital_acronym_is_left_alone():
+    """ "HMM" is a model, "ERM" is enterprise risk management, "UM" is a name. A word
+    shouted in capitals is not somebody hesitating."""
+    text, removed = strip_fillers("The HMM model and ERM report", MIXED)
+    assert text == "The HMM model and ERM report"
+    assert removed == 0
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        'ის ამბობს "კარგი მმმ" ახლა',
+        "(ეს იყო კარგი ააა) და მერე",
+        "[შენიშვნა: ააა] დანარჩენი",
+        '„ეს არის ააა" და მერე',
+        "ის თქვა «კარგი ააა» მერე",
+    ],
+)
+def test_a_closing_mark_that_belongs_to_the_sentence_is_never_swallowed(spoken):
+    """A quote or bracket the hesitation did not open belongs to the user's sentence.
+    Leaving the hesitation in is a blemish; taking the closing mark is a corruption."""
+    text, _ = strip_fillers(spoken, GEORGIAN)
+    for mark in '"”»)]':
+        assert text.count(mark) == spoken.count(mark)
 
 
 def test_a_real_word_that_begins_with_the_same_doubled_letter_is_left_alone():

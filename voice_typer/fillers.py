@@ -20,8 +20,15 @@ from functools import lru_cache
 
 # Punctuation that a hesitation may be wearing, and which leaves with it. A comma after
 # "მმმ" is the model punctuating the hesitation, not the sentence.
-_LEADING = r"[\"'«»“”„(\[{]*"
-_TRAILING = r"[,;:\"'«»“”)\]}]*"
+#
+# The closing mark is deliberately conditional on having opened one. A quote or bracket
+# the hesitation did not open belongs to the user's sentence — swallowing it turns
+# 'ის ამბობს "კარგი მმმ" ახლა' into 'ის ამბობს "კარგი ახლა', which no one can repair
+# afterwards because the audio is already gone. When the marks do not pair up the
+# hesitation simply survives, which is a blemish rather than a corruption.
+_OPEN = r"(?P<open>[\"'«„“(\[{])?"
+_TRAILING = r"[,;:]*"
+_CLOSE = r"(?(open)[\"'»”)\]}]?)"
 # A full stop, question or exclamation mark ends the *sentence*, so it is handed back and
 # the tidy pass closes the gap: "ეს არის მმმ." becomes "ეს არის."
 _SENTENCE_END = r"(?P<end>[.!?…]*)"
@@ -74,22 +81,26 @@ def _pattern(filler_words: tuple[str, ...]) -> re.Pattern[str]:
     # characters, and Georgian sitting next to punctuation gives surprising answers.
     # These two say "nothing but whitespace on either side", which is what a standalone
     # token actually is — and it is what makes "მმართველი" safe from the filler "მმმ".
-    return re.compile(
-        rf"(?<!\S){_LEADING}(?:{shapes}){_TRAILING}{_SENTENCE_END}(?!\S)",
-        re.IGNORECASE,
-    )
+    return re.compile(rf"(?<!\S){_OPEN}(?:{shapes}){_TRAILING}{_CLOSE}{_SENTENCE_END}(?!\S)")
 
 
 def _shape(word: str) -> str:
     """Turn a configured filler into the shape it matches, elongations included.
 
-    A letter written once must appear at least once; a letter written twice or more must
-    appear at least twice, with no ceiling. So "ააა" matches "აა" and "ააააა" but never a
-    lone "ა", and "hmm" matches "hmmmm" but not "hm".
+    Every letter must appear **at least as many times as it was written**, with no
+    ceiling. So "ააა" matches "ააა" and "ააააა" but not "აა", and "hmm" matches "hmmmm"
+    but not "hm".
 
-    The doubled-letter floor is what keeps a single Georgian letter — a list marker like
-    "ა)", an initial — from ever being deleted. Config validation refuses a filler shorter
-    than two characters, so every shape demands at least two characters to match.
+    Requiring the full written length is what keeps real words out of reach. An earlier
+    version let a run of three match a run of two, and "მმმ" therefore matched "მმ" — the
+    Georgian abbreviation for millimetre — so a dictated "10 მმ" came out as "10". A
+    number that has quietly lost its unit reads as completely correct, which is the worst
+    kind of mistake this module can make. Anyone who really does hesitate in exactly two
+    letters can add that spelling to the list.
+
+    Only the first letter may also appear as a capital, and only if the alphabet has one.
+    That covers a hesitation opening a sentence — "Uh, maybe" — without matching an
+    acronym: "HMM" is a model, "ERM" is a department, and neither is anybody hesitating.
     """
     parts: list[str] = []
     index = 0
@@ -99,5 +110,14 @@ def _shape(word: str) -> str:
         while index < len(word) and word[index] == letter:
             run += 1
             index += 1
-        parts.append(f"{re.escape(letter)}{{{2 if run > 1 else 1},}}")
+        atom = _first_letter_class(letter) if not parts else re.escape(letter)
+        parts.append(f"{atom}{{{run},}}")
     return "".join(parts)
+
+
+def _first_letter_class(letter: str) -> str:
+    """The opening letter in either case, where the script has two of them."""
+    upper = letter.upper()
+    if upper == letter or len(upper) != 1:
+        return re.escape(letter)
+    return f"[{re.escape(letter)}{re.escape(upper)}]"
