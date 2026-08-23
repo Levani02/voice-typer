@@ -879,3 +879,7 @@ def test_a_hesitation_only_take_is_not_reported_as_a_transcription_failure(logs,
 
     assert tray.states[-1] is TrayState.ERROR  # the state machine still recovers
     assert TRANSCRIPT not in " ".join(tray.messages)
+    # The exact sentence, not just "some message": under the generic handler the user is
+    # told the recording was saved and can be re-sent, which for a take of pure "მმმ"
+    # sends them looking for a problem that is not there.
+    assert tray.messages[-1] == "მხოლოდ ჩაფიქრების ხმა იყო — ჩასასმელი არაფერია"

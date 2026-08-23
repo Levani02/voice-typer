@@ -240,3 +240,10 @@ def test_the_summary_instruction_can_be_rewritten(tmp_path):
 def test_an_empty_summary_instruction_is_rejected(tmp_path):
     with pytest.raises(ConfigError, match="summary_instruction"):
         load_config(write_config(tmp_path, {"summary_instruction": ""}))
+
+
+def test_a_summary_instruction_of_only_spaces_is_rejected(tmp_path):
+    """It would arrive empty and make summary mode a switch that does nothing while the
+    card still says it is on."""
+    with pytest.raises(ConfigError, match="summary_instruction"):
+        load_config(write_config(tmp_path, {"summary_instruction": "   "}))

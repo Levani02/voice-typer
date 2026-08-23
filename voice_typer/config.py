@@ -186,7 +186,10 @@ def _validate_ranges(values: dict[str, object]) -> None:
             raise ConfigError(f"config.json: '{name}' must be true or false")
 
     for name in ("hotkey", "language_code", "model_id", "summary_instruction"):
-        if not isinstance(values[name], str) or not values[name]:
+        # Stripped before the check, because these are stripped before they are used. A
+        # `summary_instruction` of three spaces would otherwise pass here, arrive empty,
+        # and turn summary mode into a switch that reports itself on and does nothing.
+        if not isinstance(values[name], str) or not values[name].strip():
             raise ConfigError(f"config.json: '{name}' must be a non-empty text value")
 
     device = values["input_device"]
