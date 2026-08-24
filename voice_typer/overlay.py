@@ -79,7 +79,7 @@ COLLAPSED_WIDTH = 196
 COLLAPSED_HEIGHT = 56
 COLLAPSED_RADIUS = 14
 COLLAPSED_PAD = 16
-# Folded, the strip grows only in the mode that has something to announce. Summary mode
+# Folded, the strip grows only in the mode that has something to announce. Rewrite mode
 # changes what lands at the cursor, so it is never allowed to hide behind a folded card.
 COLLAPSED_MODE_EXTRA = 104
 MODE_PILL_WIDTH = 132
@@ -151,9 +151,9 @@ class Controller(Protocol):
     def ui_level(self) -> float: ...
     def ui_hotkey_label(self) -> str: ...
     def ui_device_label(self) -> str: ...
-    def ui_summary_mode(self) -> bool: ...
-    def set_summary_mode(self, on: bool) -> None: ...
-    def toggle_summary_mode(self) -> None: ...
+    def ui_rewrite_mode(self) -> bool: ...
+    def set_rewrite_mode(self, on: bool) -> None: ...
+    def toggle_rewrite_mode(self) -> None: ...
     def usage_text(self) -> str: ...
     def toggle_recording(self) -> None: ...
     def toggle_pause(self) -> None: ...
@@ -225,9 +225,9 @@ class OverlayWindow:
         self._saved_collapsed = self._collapsed
         # The window owns the file this was written to, so it restores the value and hands
         # it to the app, which is the one that decides what goes on the clipboard.
-        self._summary_mode = bool(saved.get("summary_mode", False))
-        self._saved_summary_mode = self._summary_mode
-        controller.set_summary_mode(self._summary_mode)
+        self._rewrite_mode = bool(saved.get("rewrite_mode", False))
+        self._saved_rewrite_mode = self._rewrite_mode
+        controller.set_rewrite_mode(self._rewrite_mode)
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
         # shown again can come back unmapped, which is exactly as useful as no window.
@@ -256,7 +256,7 @@ class OverlayWindow:
         """The card's width in design pixels, for whichever shape it is wearing."""
         if not self._collapsed:
             return WINDOW_WIDTH
-        return COLLAPSED_WIDTH + (COLLAPSED_MODE_EXTRA if self._summary_mode else 0)
+        return COLLAPSED_WIDTH + (COLLAPSED_MODE_EXTRA if self._rewrite_mode else 0)
 
     def _card_height(self) -> int:
         return COLLAPSED_HEIGHT if self._collapsed else WINDOW_HEIGHT
@@ -353,7 +353,7 @@ class OverlayWindow:
         self._paint_fold_button(toggle, pointing_up=True)
 
         edge = toggle[0] - self._s(10)
-        if self._summary_mode:
+        if self._rewrite_mode:
             # Only in the mode that changes what gets pasted. The ordinary mode says
             # nothing, so anything the folded strip does say is worth reading.
             pill = (edge - self._s(MODE_PILL_WIDTH * 0.72), y - self._c(9), edge, y + self._c(9))
@@ -427,10 +427,10 @@ class OverlayWindow:
         where the mode is drawn and exactly one where it is read.
         """
         box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
-        summary = self._summary_mode
+        rewrite = self._rewrite_mode
         button = Button(
             box,
-            self.toggle_summary_mode,
+            self.toggle_rewrite_mode,
             theme.BUTTON_TOP,
             theme.BUTTON_BOTTOM,
             theme.BUTTON_TOP_HOVER,
@@ -440,14 +440,14 @@ class OverlayWindow:
         button.fill_items = theme.rounded_gradient(
             self._canvas, box, radius, button.top, button.bottom
         )
-        theme.rounded_outline(self._canvas, box, radius, ORANGE if summary else theme.BUTTON_BORDER)
+        theme.rounded_outline(self._canvas, box, radius, ORANGE if rewrite else theme.BUTTON_BORDER)
         self._buttons["mode"] = button
 
         self._canvas.create_text(
             (box[0] + box[2]) / 2,
             (box[1] + box[3]) / 2,
-            text="შეჯამება" if summary else "სიტყვები",
-            fill=ORANGE if summary else theme.TEXT_MUTED,
+            text="გამართვა" if rewrite else "სიტყვები",
+            fill=ORANGE if rewrite else theme.TEXT_MUTED,
             font=self._font(theme.UI_FAMILY, theme.FOOTER_PX + 1),
         )
 
@@ -714,15 +714,15 @@ class OverlayWindow:
         self._rebuild()
         self._save_position()
 
-    def toggle_summary_mode(self) -> None:
+    def toggle_rewrite_mode(self) -> None:
         """Switch between pasting the words and pasting them with the instruction.
 
         The app owns the setting; the window owns showing it and the file it is
         remembered in. Repainting is not optional — the folded strip is a different width
         in the two modes, because the mode has to stay visible with the card folded away.
         """
-        self._controller.toggle_summary_mode()
-        self._summary_mode = self._controller.ui_summary_mode()
+        self._controller.toggle_rewrite_mode()
+        self._rewrite_mode = self._controller.ui_rewrite_mode()
         self._rebuild()
         self._save_position()
 
@@ -842,7 +842,7 @@ class OverlayWindow:
             command=lambda: self._safely(self._controller.retry_last),
         )
         self._menu.add_command(
-            label="შეჯამების რეჟიმი", command=lambda: self._safely(self.toggle_summary_mode)
+            label="გამართვის რეჟიმი", command=lambda: self._safely(self.toggle_rewrite_mode)
         )
         self._menu.add_command(label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed))
         self._menu.add_separator()
@@ -866,7 +866,7 @@ class OverlayWindow:
         self._menu.entryconfig(0, label=self._controller.usage_text())
         self._menu.entryconfig(2, label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"))
         self._menu.entryconfig(
-            4, label=("✓ შეჯამების რეჟიმი" if self._summary_mode else "შეჯამების რეჟიმი")
+            4, label=("✓ გამართვის რეჟიმი" if self._rewrite_mode else "გამართვის რეჟიმი")
         )
         self._menu.entryconfig(5, label=("გაშლა" if self._collapsed else "ჩაკეცვა"))
 
@@ -926,7 +926,7 @@ class OverlayWindow:
         unchanged = (
             position == self._saved_position
             and self._collapsed == self._saved_collapsed
-            and self._summary_mode == self._saved_summary_mode
+            and self._rewrite_mode == self._saved_rewrite_mode
         )
         if unchanged:
             return
@@ -938,14 +938,14 @@ class OverlayWindow:
                         "x": position[0],
                         "y": position[1],
                         "collapsed": self._collapsed,
-                        "summary_mode": self._summary_mode,
+                        "rewrite_mode": self._rewrite_mode,
                     }
                 ),
                 encoding="utf-8",
             )
             self._saved_position = position
             self._saved_collapsed = self._collapsed
-            self._saved_summary_mode = self._summary_mode
+            self._saved_rewrite_mode = self._rewrite_mode
         except OSError as exc:
             logger.warning("could not remember the window position: %s", exc)
 

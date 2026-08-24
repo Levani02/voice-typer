@@ -35,7 +35,7 @@ Then the user set a constraint of their own: **no Anthropic API in this project.
 `F9` keeps doing one thing. What it does is decided by a mode the user sets beforehand:
 
 * **words** (default) — the transcript, minus hesitations
-* **summary** — the transcript with `summary_instruction` in front of it
+* **rewrite** — the transcript with `rewrite_instruction` in front of it
 
 The switch is a pill in the card's footer and an item in the right-click menu. It is
 remembered in `logs/window.json` beside the window position and the folded state.
@@ -65,7 +65,7 @@ Either layer can be switched off without the other.
 
 **4. The folded card grows rather than hides the mode.**
 
-Collapsed, the strip carries the mode pill — and only in summary mode, so anything the
+Collapsed, the strip carries the mode pill — and only in rewrite mode, so anything the
 folded strip says is worth reading. The window is wider in that mode by design.
 
 ## Alternatives rejected
@@ -107,3 +107,44 @@ boxes as content.
 * **Georgian sits in ElevenLabs' second accuracy tier of four** ("High Accuracy, >5% to
   ≤10% WER"). `keyterms` is the documented lever for that and has been empty since the
   project started.
+
+---
+
+## Revision, 2026-08-24 — the mode was never a summary
+
+The first real dictation through the second mode came back as the user's own sentence,
+tidied, and they asked the right question: *what is this mode supposed to do?*
+
+Nothing was broken. The shipped instruction said "გადაწერე **მოკლედ**" — rewrite briefly —
+and a sixteen-word dictation has nothing to shorten, so the model returned the sentence it
+was given. The instruction was wrong, not the code.
+
+Four candidate instructions were then run against the same three Georgian dictations —
+short, a 45-second ramble, and a task for an assistant — and the outputs compared:
+
+| Instruction | The 45-second ramble became |
+| --- | --- |
+| bullet points | 40% shorter, five bullets, all five topics flattened to equal weight |
+| **polish** | **13% shorter, every topic in its original order** |
+| a message to send | half the length, reordered by priority, addressed to a person |
+| a brief for an assistant | 1.5× longer, ending in six clarifying questions |
+
+The user wanted the second one: *"გაწელილ საუბარზე მინდა რომ მუშაობდეს — სწორად
+ჩამოაყალიბოს სათქმელი და წინადადება."* Say what I meant, properly. Not shorter.
+
+**Two changes follow.**
+
+`summary_*` is renamed to `rewrite_*` throughout, and the card says **გამართვა** rather
+than შეჯამება. A label that promises summarising and delivers tidying is how this
+conversation started; the name now matches the job.
+
+The default instruction says *"ნუ შეაჯამებ და ნუ შეამოკლებ"* and names the hedges to keep.
+That last clause is not decoration. Every condensing candidate deleted "ალბათ" — turning
+*"ალბათ ჯერ ტელეფონით უნდა დავიწყოთ"*, a thought, into an instruction. The words someone
+hedges with are the first to go and the ones they most need back.
+
+**Still true and worth repeating:** this mode hands the user's words to a model that will
+rewrite them. The trial also showed "ორამდე" becoming "ორ საათამდე", and a spoken "სახელი
+გვარი" — one column — punctuated into "სახელი, გვარი", two. That is the cost of the mode,
+it is why it is not the default, and it is why "სიტყვები" stays for anything where the
+exact wording is the point.

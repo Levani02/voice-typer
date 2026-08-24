@@ -228,22 +228,22 @@ def test_too_many_filler_words_is_rejected(tmp_path):
         load_config(write_config(tmp_path, {"filler_words": too_many}))
 
 
-def test_the_summary_instruction_has_a_georgian_default(tmp_path):
-    assert load_config(tmp_path / "absent.json").summary_instruction
+def test_the_rewrite_instruction_has_a_georgian_default(tmp_path):
+    assert load_config(tmp_path / "absent.json").rewrite_instruction
 
 
-def test_the_summary_instruction_can_be_rewritten(tmp_path):
-    cfg = load_config(write_config(tmp_path, {"summary_instruction": "შეაჯამე ეს:"}))
-    assert cfg.summary_instruction == "შეაჯამე ეს:"
+def test_the_rewrite_instruction_can_be_rewritten(tmp_path):
+    cfg = load_config(write_config(tmp_path, {"rewrite_instruction": "შეაჯამე ეს:"}))
+    assert cfg.rewrite_instruction == "შეაჯამე ეს:"
 
 
-def test_an_empty_summary_instruction_is_rejected(tmp_path):
-    with pytest.raises(ConfigError, match="summary_instruction"):
-        load_config(write_config(tmp_path, {"summary_instruction": ""}))
+def test_an_empty_rewrite_instruction_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="rewrite_instruction"):
+        load_config(write_config(tmp_path, {"rewrite_instruction": ""}))
 
 
-def test_a_summary_instruction_of_only_spaces_is_rejected(tmp_path):
-    """It would arrive empty and make summary mode a switch that does nothing while the
+def test_a_rewrite_instruction_of_only_spaces_is_rejected(tmp_path):
+    """It would arrive empty and make rewrite mode a switch that does nothing while the
     card still says it is on."""
-    with pytest.raises(ConfigError, match="summary_instruction"):
-        load_config(write_config(tmp_path, {"summary_instruction": "   "}))
+    with pytest.raises(ConfigError, match="rewrite_instruction"):
+        load_config(write_config(tmp_path, {"rewrite_instruction": "   "}))

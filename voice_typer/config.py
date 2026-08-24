@@ -61,16 +61,24 @@ DEFAULTS: dict[str, object] = {
     "no_verbatim": True,
     "price_per_hour_usd": 0.22,
     "keyterms": [],
-    # A second net, on this side of the wire, for the hesitations the model still writes
-    # down. Whole tokens only. An empty list switches the whole thing off.
-    # Georgian only. Latin entries would reach for capitalised words that are somebody's
-    # name — "Um" is a surname — and this app transcribes Georgian. Add them by hand if
-    # your dictation really needs them.
+    # A second net, on this side of the wire, for the hesitations the model still
+    # writes down. Whole tokens only, and an empty list switches it off.
+    #
+    # Georgian only: a Latin entry would reach for capitalised words that are
+    # somebody's name — "Um" is a surname — and this app transcribes Georgian.
     "filler_words": ["ააა", "ეეე", "ოოო", "მმმ", "ჰმმ", "ემმ", "უუუ"],
-    # What the summary mode puts in front of the transcript. The app never asks a model
-    # anything — this rides along to whatever is on the other side of the paste.
-    "summary_instruction": (
-        "შემდეგი ნათქვამი გადაწერე მოკლედ და გასწორებულად, საკითხების გამოყოფით:"
+    # What the rewrite mode puts in front of the transcript. The app never asks a
+    # model anything — this rides along to whatever is on the other side of the paste.
+    #
+    # It deliberately does not say "shorten". Four wordings were tried against the same
+    # Georgian dictations, and every one that condensed also flattened "ალბათ" into a
+    # decision — the words someone hedges with are the ones they most need back.
+    "rewrite_instruction": (
+        "შემდეგი ნათქვამი გადაწერე გამართული, სამწერლო ქართულით — ზეპირი გამეორებები, "
+        "ჩაფიქრებები და გაწყვეტილი წინადადებები მოაშორე. ყველა აზრი, ფაქტი, რიცხვი და "
+        "თანმიმდევრობა შეინარჩუნე; ნუ შეაჯამებ და ნუ შეამოკლებ. სიფრთხილის სიტყვები "
+        "„ალბათ“, „შეიძლება“, „მგონი“ დატოვე ისე, როგორც ითქვა. "
+        "არაფერი დაამატო, რაც არ ითქვა."
     ),
     "prune_takes_after_days": 7,
     "window_scale": 1.0,
@@ -140,7 +148,7 @@ class Config:
     price_per_hour_usd: float
     keyterms: tuple[str, ...]
     filler_words: tuple[str, ...]
-    summary_instruction: str
+    rewrite_instruction: str
     prune_takes_after_days: int
     window_scale: float
     content_scale: float
@@ -185,10 +193,10 @@ def _validate_ranges(values: dict[str, object]) -> None:
         if not isinstance(values[name], bool):
             raise ConfigError(f"config.json: '{name}' must be true or false")
 
-    for name in ("hotkey", "language_code", "model_id", "summary_instruction"):
+    for name in ("hotkey", "language_code", "model_id", "rewrite_instruction"):
         # Stripped before the check, because these are stripped before they are used. A
-        # `summary_instruction` of three spaces would otherwise pass here, arrive empty,
-        # and turn summary mode into a switch that reports itself on and does nothing.
+        # `rewrite_instruction` of three spaces would otherwise pass here, arrive empty,
+        # and turn rewrite mode into a switch that reports itself on and does nothing.
         if not isinstance(values[name], str) or not values[name].strip():
             raise ConfigError(f"config.json: '{name}' must be a non-empty text value")
 
@@ -378,7 +386,7 @@ def load_config(config_path: Path | None = None) -> Config:
         price_per_hour_usd=float(values["price_per_hour_usd"]),
         keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
         filler_words=tuple(values["filler_words"]),  # type: ignore[arg-type]
-        summary_instruction=str(values["summary_instruction"]).strip(),
+        rewrite_instruction=str(values["rewrite_instruction"]).strip(),
         prune_takes_after_days=int(values["prune_takes_after_days"]),
         window_scale=float(values["window_scale"]),
         content_scale=float(values["content_scale"]),

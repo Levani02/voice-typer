@@ -129,7 +129,7 @@ class App:
         # instruction from config.json in front of them, so whatever receives the paste —
         # a chat box with an assistant in it — does the summarising. This app asks no
         # model anything either way.
-        self._summary_mode = False
+        self._rewrite_mode = False
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -266,18 +266,18 @@ class App:
             self._device_label = _describe_input_device(self._config.input_device)
         return self._device_label
 
-    def ui_summary_mode(self) -> bool:
+    def ui_rewrite_mode(self) -> bool:
         """True when the instruction rides in front of the words."""
-        return self._summary_mode
+        return self._rewrite_mode
 
-    def set_summary_mode(self, on: bool) -> None:
+    def set_rewrite_mode(self, on: bool) -> None:
         """Used once at startup, to restore the mode the window remembered."""
-        self._summary_mode = bool(on)
+        self._rewrite_mode = bool(on)
 
-    def toggle_summary_mode(self) -> None:
+    def toggle_rewrite_mode(self) -> None:
         """The window's mode switch."""
-        self._summary_mode = not self._summary_mode
-        logger.info("summary mode %s", "on" if self._summary_mode else "off")
+        self._rewrite_mode = not self._rewrite_mode
+        logger.info("rewrite mode %s", "on" if self._rewrite_mode else "off")
 
     def toggle_recording(self) -> None:
         """The window's record button. Does what pressing the hotkey would do."""
@@ -473,13 +473,13 @@ class App:
     def _compose(self, text: str) -> str:
         """What actually goes on the clipboard.
 
-        In summary mode the instruction rides in front of the words. Nothing is sent
+        In rewrite mode the instruction rides in front of the words. Nothing is sent
         anywhere and nothing is rewritten here — the text is simply addressed to whatever
         is on the other side of the paste.
         """
-        if not self._summary_mode or not self._config.summary_instruction:
+        if not self._rewrite_mode or not self._config.rewrite_instruction:
             return text
-        return f"{self._config.summary_instruction}\n\n{text}"
+        return f"{self._config.rewrite_instruction}\n\n{text}"
 
     def _record_usage(self, transcript: Transcript, measured_seconds: float) -> None:
         """Prefer the duration ElevenLabs billed for — that is what the invoice will say."""

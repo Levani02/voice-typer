@@ -30,7 +30,7 @@ class StubController:
     def __init__(self, state="idle"):
         self.state = state
         self.level = 0.5
-        self.summary_mode = False
+        self.rewrite_mode = False
         self.calls: list[str] = []
 
     def ui_state(self):
@@ -48,15 +48,15 @@ class StubController:
     def ui_device_label(self):
         return "მიკროფონი: Microphone Array"
 
-    def ui_summary_mode(self):
-        return self.summary_mode
+    def ui_rewrite_mode(self):
+        return self.rewrite_mode
 
-    def set_summary_mode(self, on):
-        self.summary_mode = bool(on)
+    def set_rewrite_mode(self, on):
+        self.rewrite_mode = bool(on)
 
-    def toggle_summary_mode(self):
-        self.summary_mode = not self.summary_mode
-        self._record("toggle_summary_mode")
+    def toggle_rewrite_mode(self):
+        self.rewrite_mode = not self.rewrite_mode
+        self._record("toggle_rewrite_mode")
 
     def usage_text(self):
         return "ხარჯი: $0.0062 · 1.2 წუთი"
@@ -125,11 +125,11 @@ def window(shared_window):
     controller.level = 0.5
     controller.calls.clear()
     overlay._levels = [0.0] * BAR_COUNT
-    if overlay._summary_mode:
+    if overlay._rewrite_mode:
         # One window serves the whole module; a test that switched modes must not hand
         # the next one a card of a different width.
-        controller.summary_mode = False
-        overlay._summary_mode = False
+        controller.rewrite_mode = False
+        overlay._rewrite_mode = False
         overlay._rebuild()
         overlay._root.update_idletasks()
     if overlay._collapsed:
@@ -497,8 +497,8 @@ def test_unfolding_in_the_corner_keeps_the_card_on_the_screen(window):
 def test_the_card_opens_in_the_mode_that_pastes_the_words(window):
     """The mode that changes what lands at the cursor is never the one you get by default."""
     overlay, controller, _ = window
-    assert overlay._summary_mode is False
-    assert controller.summary_mode is False
+    assert overlay._rewrite_mode is False
+    assert controller.rewrite_mode is False
 
 
 def test_clicking_the_mode_pill_switches_the_app_over(window):
@@ -506,9 +506,9 @@ def test_clicking_the_mode_pill_switches_the_app_over(window):
 
     click(overlay, "mode")
 
-    assert controller.summary_mode is True
-    assert overlay._summary_mode is True
-    assert "toggle_summary_mode" in controller.calls
+    assert controller.rewrite_mode is True
+    assert overlay._rewrite_mode is True
+    assert "toggle_rewrite_mode" in controller.calls
 
 
 def test_the_mode_survives_a_restart(window):
@@ -516,7 +516,7 @@ def test_the_mode_survives_a_restart(window):
 
     click(overlay, "mode")
 
-    assert json.loads(path.read_text(encoding="utf-8"))["summary_mode"] is True
+    assert json.loads(path.read_text(encoding="utf-8"))["rewrite_mode"] is True
 
 
 def test_the_window_hands_the_remembered_mode_to_the_app_at_startup(window):
@@ -524,15 +524,15 @@ def test_the_window_hands_the_remembered_mode_to_the_app_at_startup(window):
     one line that connects them, and getting it wrong would paste an instruction the
     user never asked for."""
     overlay, controller, _ = window
-    controller.summary_mode = True
+    controller.rewrite_mode = True
 
     overlay._read_saved_state()  # the real path is exercised in the constructor
-    controller.set_summary_mode(False)
+    controller.set_rewrite_mode(False)
 
-    assert controller.summary_mode is False
+    assert controller.rewrite_mode is False
 
 
-def test_the_folded_strip_still_shows_the_summary_mode(window):
+def test_the_folded_strip_still_shows_the_rewrite_mode(window):
     """Folding the card away must not fold away the fact that it will rewrite the paste."""
     overlay, _, _ = window
     click(overlay, "mode")
@@ -556,11 +556,11 @@ def test_the_folded_strip_says_nothing_in_the_ordinary_mode(window):
 
 
 @pytest.mark.parametrize("state", sorted(APPEARANCE))
-def test_every_state_paints_in_summary_mode(window, state):
+def test_every_state_paints_in_rewrite_mode(window, state):
     overlay, controller, _ = window
     click(overlay, "mode")
 
     controller.state = state
     overlay._update()
 
-    assert overlay._summary_mode
+    assert overlay._rewrite_mode
