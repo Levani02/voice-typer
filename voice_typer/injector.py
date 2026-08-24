@@ -142,6 +142,16 @@ def _read_clipboard() -> str | None:
         return None
 
 
+def copy_to_clipboard(text: str) -> None:
+    """Put text on the clipboard and nothing else — no paste, no focus change.
+
+    The window offers this as the way back to the raw transcript after a rewrite the user
+    did not want. Deliberately not a second paste: by the time they decide, the caret may
+    be in a different window, and this app has already shipped two fixes for exactly that.
+    """
+    _write_clipboard(text)
+
+
 def _write_clipboard(text: str) -> None:
     """Put the text on the clipboard and confirm it actually took.
 

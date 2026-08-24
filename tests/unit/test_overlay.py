@@ -79,6 +79,12 @@ class StubController:
     def retry_last(self):
         self._record("retry_last")
 
+    def copy_raw_text(self):
+        self._record("copy_raw_text")
+
+    def open_rewrite_prompt(self):
+        self._record("open_rewrite_prompt")
+
     def open_logs(self):
         self._record("open_logs")
 
@@ -564,3 +570,27 @@ def test_every_state_paints_in_rewrite_mode(window, state):
     overlay._update()
 
     assert overlay._rewrite_mode
+
+
+def test_the_menu_relabels_the_entries_it_means_to(window):
+    """The labels that change are found by name, not by counting positions. Inserting an
+    item above one of them used to mean silently relabelling the wrong line."""
+    overlay, controller, _ = window
+    controller.state = "idle"
+
+    overlay._sync_menu()
+
+    for name in ("usage", "listening", "mode", "fold"):
+        assert name in overlay._menu_index
+    assert overlay._menu.entrycget(overlay._menu_index["fold"], "label") == "ჩაკეცვა"
+    assert "F9" in overlay._menu.entrycget(overlay._menu_index["listening"], "label")
+    assert "გამართვის" in overlay._menu.entrycget(overlay._menu_index["mode"], "label")
+
+
+def test_the_menu_marks_the_rewrite_mode_when_it_is_on(window):
+    overlay, _, _ = window
+    click(overlay, "mode")
+
+    overlay._sync_menu()
+
+    assert overlay._menu.entrycget(overlay._menu_index["mode"], "label").startswith("✓")

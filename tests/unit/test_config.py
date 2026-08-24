@@ -228,22 +228,47 @@ def test_too_many_filler_words_is_rejected(tmp_path):
         load_config(write_config(tmp_path, {"filler_words": too_many}))
 
 
-def test_the_rewrite_instruction_has_a_georgian_default(tmp_path):
-    assert load_config(tmp_path / "absent.json").rewrite_instruction
+def test_the_rewrite_model_has_a_default(tmp_path):
+    assert load_config(tmp_path / "absent.json").rewrite_model == "gemini-2.5-flash"
 
 
-def test_the_rewrite_instruction_can_be_rewritten(tmp_path):
-    cfg = load_config(write_config(tmp_path, {"rewrite_instruction": "შეაჯამე ეს:"}))
-    assert cfg.rewrite_instruction == "შეაჯამე ეს:"
+def test_the_rewrite_prompt_lives_beside_config_json(tmp_path):
+    cfg = load_config(tmp_path / "absent.json")
+    assert cfg.rewrite_prompt_path.name == "rewrite-prompt.md"
+    assert cfg.rewrite_prompt_path.parent == config_module.PROJECT_ROOT
 
 
-def test_an_empty_rewrite_instruction_is_rejected(tmp_path):
-    with pytest.raises(ConfigError, match="rewrite_instruction"):
-        load_config(write_config(tmp_path, {"rewrite_instruction": ""}))
+def test_a_second_instruction_file_can_be_named(tmp_path):
+    """Keeping several instructions and switching between them is one edit, not a feature
+    that had to be built."""
+    cfg = load_config(write_config(tmp_path, {"rewrite_prompt_file": "email.md"}))
+    assert cfg.rewrite_prompt_path.name == "email.md"
 
 
-def test_a_rewrite_instruction_of_only_spaces_is_rejected(tmp_path):
-    """It would arrive empty and make rewrite mode a switch that does nothing while the
-    card still says it is on."""
-    with pytest.raises(ConfigError, match="rewrite_instruction"):
-        load_config(write_config(tmp_path, {"rewrite_instruction": "   "}))
+def test_a_prompt_file_outside_the_settings_folder_is_rejected(tmp_path):
+    """The window's menu opens this file. A settings value must not be able to point that
+    action anywhere on the disk."""
+    for bad in ("../secrets.md", "sub/folder.md", r"C:\Windows\note.md"):
+        with pytest.raises(ConfigError, match="rewrite_prompt_file"):
+            load_config(write_config(tmp_path, {"rewrite_prompt_file": bad}))
+
+
+def test_a_prompt_file_that_is_not_markdown_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="rewrite_prompt_file"):
+        load_config(write_config(tmp_path, {"rewrite_prompt_file": "prompt.exe"}))
+
+
+def test_the_rewrite_timeout_has_to_be_a_sane_wait(tmp_path):
+    with pytest.raises(ConfigError, match="rewrite_timeout_ms"):
+        load_config(write_config(tmp_path, {"rewrite_timeout_ms": 120_000}))
+
+
+def test_the_gemini_key_is_absent_by_default_and_that_is_not_an_error(tmp_path, monkeypatch):
+    """Without it only the rewrite mode is unavailable. Dictation carries on."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert load_config(tmp_path / "absent.json").gemini_api_key == ""
+
+
+def test_the_gemini_key_is_read_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    assert load_config(tmp_path / "absent.json").gemini_api_key == "test-key-not-real"

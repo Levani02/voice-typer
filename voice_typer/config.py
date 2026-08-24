@@ -44,6 +44,10 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 # ever holds the name and a value together — that shape is what a leaked key looks like.
 API_KEY_SETTING = "ELEVENLABS_API_KEY"
 
+# The second key, and the only other one. Optional: without it the rewrite mode reports
+# itself unavailable and the words mode carries on exactly as before.
+GEMINI_KEY_SETTING = "GEMINI_API_KEY"
+
 # Every setting the user may change, with the value used when config.json omits it.
 DEFAULTS: dict[str, object] = {
     "hotkey": "f9",
@@ -67,19 +71,17 @@ DEFAULTS: dict[str, object] = {
     # Georgian only: a Latin entry would reach for capitalised words that are
     # somebody's name — "Um" is a surname — and this app transcribes Georgian.
     "filler_words": ["ააა", "ეეე", "ოოო", "მმმ", "ჰმმ", "ემმ", "უუუ"],
-    # What the rewrite mode puts in front of the transcript. The app never asks a
-    # model anything — this rides along to whatever is on the other side of the paste.
-    #
-    # It deliberately does not say "shorten". Four wordings were tried against the same
-    # Georgian dictations, and every one that condensed also flattened "ალბათ" into a
-    # decision — the words someone hedges with are the ones they most need back.
-    "rewrite_instruction": (
-        "შემდეგი ნათქვამი გადაწერე გამართული, სამწერლო ქართულით — ზეპირი გამეორებები, "
-        "ჩაფიქრებები და გაწყვეტილი წინადადებები მოაშორე. ყველა აზრი, ფაქტი, რიცხვი და "
-        "თანმიმდევრობა შეინარჩუნე; ნუ შეაჯამებ და ნუ შეამოკლებ. სიფრთხილის სიტყვები "
-        "„ალბათ“, „შეიძლება“, „მგონი“ დატოვე ისე, როგორც ითქვა. "
-        "არაფერი დაამატო, რაც არ ითქვა."
-    ),
+    # The rewrite mode, which is the one place in this app where a model is allowed to
+    # touch what the user said. The instruction itself is a markdown file beside this one,
+    # so it can be edited and re-read without a restart — see `rewrite-prompt.md`.
+    "rewrite_model": "gemini-2.5-flash",
+    "rewrite_prompt_file": "rewrite-prompt.md",
+    # Seven seconds, then the raw transcript is pasted instead. Somebody is watching a
+    # cursor: polished text later is worth less than their own words now.
+    "rewrite_timeout_ms": 7000,
+    # Below this, the model is not asked. A short utterance has too little context to tell
+    # a fragment from a command, and that is the shape that invents whole paragraphs.
+    "rewrite_min_chars": 40,
     "prune_takes_after_days": 7,
     "window_scale": 1.0,
     "content_scale": 1.0,
@@ -94,6 +96,10 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "clipboard_restore_delay_ms": (0, 5_000),
     "price_per_hour_usd": (0, 100),
     "prune_takes_after_days": (1, 365),
+    # Under a second is not enough for any model to answer; over half a minute nobody is
+    # still waiting for their own sentence.
+    "rewrite_timeout_ms": (1_000, 30_000),
+    "rewrite_min_chars": (0, 1_000),
     # How large the recorder window is drawn, on top of the display's own scaling. Below
     # about a third the Georgian labels stop being legible at any DPI.
     "window_scale": (0.3, 2.0),
@@ -148,7 +154,11 @@ class Config:
     price_per_hour_usd: float
     keyterms: tuple[str, ...]
     filler_words: tuple[str, ...]
-    rewrite_instruction: str
+    rewrite_model: str
+    rewrite_prompt_path: Path
+    rewrite_timeout_ms: int
+    rewrite_min_chars: int
+    gemini_api_key: str
     prune_takes_after_days: int
     window_scale: float
     content_scale: float
@@ -193,7 +203,7 @@ def _validate_ranges(values: dict[str, object]) -> None:
         if not isinstance(values[name], bool):
             raise ConfigError(f"config.json: '{name}' must be true or false")
 
-    for name in ("hotkey", "language_code", "model_id", "rewrite_instruction"):
+    for name in ("hotkey", "language_code", "model_id", "rewrite_model", "rewrite_prompt_file"):
         # Stripped before the check, because these are stripped before they are used. A
         # `rewrite_instruction` of three spaces would otherwise pass here, arrive empty,
         # and turn rewrite mode into a switch that reports itself on and does nothing.
@@ -204,6 +214,7 @@ def _validate_ranges(values: dict[str, object]) -> None:
     if device is not None and not isinstance(device, int | str):
         raise ConfigError("config.json: 'input_device' must be null, a number, or a device name")
 
+    _validate_prompt_file(str(values["rewrite_prompt_file"]))
     _validate_keyterms(values["keyterms"])
     _validate_filler_words(values["filler_words"])
     _validate_no_verbatim(values)
@@ -223,6 +234,23 @@ def _validate_hotkey(name: str) -> None:
         parse_key(name)
     except ValueError as exc:
         raise ConfigError(f"config.json: {exc}") from exc
+
+
+def _validate_prompt_file(name: str) -> None:
+    """A plain filename beside config.json — no folders, no climbing out of it.
+
+    The window's menu opens this file, and this project's rule is that a menu action opens
+    a fixed path rather than one a settings file chose. Confining the value to a bare
+    `.md` name in the settings folder is what keeps that true while still letting the user
+    keep several instructions and switch between them by name.
+    """
+    if "/" in name or "\\" in name or ".." in name:
+        raise ConfigError(
+            "config.json: 'rewrite_prompt_file' must be a file name beside config.json, "
+            'not a path — for example "rewrite-prompt.md"'
+        )
+    if not name.lower().endswith(".md"):
+        raise ConfigError("config.json: 'rewrite_prompt_file' must end with .md")
 
 
 def _validate_keyterms(keyterms: object) -> None:
@@ -315,29 +343,32 @@ def _env_lines_with_key(existing: list[str], key: str) -> list[str]:
     return updated
 
 
-def _bundled_config() -> Path | None:
-    """The copy of config.json carried inside a packaged executable, if there is one."""
+def _bundled(name: str) -> Path | None:
+    """A file carried inside a packaged executable, if there is one."""
     root = getattr(sys, "_MEIPASS", None)
     if not root:
         return None
-    candidate = Path(root) / "config.json"
+    candidate = Path(root) / name
     return candidate if candidate.is_file() else None
 
 
 def ensure_settings_file() -> None:
-    """Put a settings file where the user can find it, on a packaged build's first run.
+    """Put the editable files where the user can find them, on a packaged first run.
 
-    Running from source it is already there. A packaged build carries its copy in a folder
-    that is deleted when the app exits, so it is written out beside the executable once —
-    otherwise "Settings" in the menu would open a file that vanishes.
+    Running from source they are already there. A packaged build carries its copies in a
+    folder that is deleted when the app exits, so they are written out beside the
+    executable once — otherwise the menu's "Settings" and "rewrite instruction" entries
+    would open files that vanish.
     """
-    if CONFIG_PATH.exists():
-        return
-    bundled = _bundled_config()
-    if bundled is None:
-        return
-    with contextlib.suppress(OSError):
-        CONFIG_PATH.write_bytes(bundled.read_bytes())
+    for target in (CONFIG_PATH, PROJECT_ROOT / DEFAULTS["rewrite_prompt_file"]):  # type: ignore[operator]
+        if target.exists():
+            continue
+        bundled = _bundled(target.name)
+        if bundled is None:
+            continue
+        with contextlib.suppress(OSError):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(bundled.read_bytes())
 
 
 def save_api_key(key: str) -> None:
@@ -386,7 +417,12 @@ def load_config(config_path: Path | None = None) -> Config:
         price_per_hour_usd=float(values["price_per_hour_usd"]),
         keyterms=tuple(values["keyterms"]),  # type: ignore[arg-type]
         filler_words=tuple(values["filler_words"]),  # type: ignore[arg-type]
-        rewrite_instruction=str(values["rewrite_instruction"]).strip(),
+        rewrite_model=str(values["rewrite_model"]).strip(),
+        rewrite_prompt_path=PROJECT_ROOT / str(values["rewrite_prompt_file"]).strip(),
+        rewrite_timeout_ms=int(values["rewrite_timeout_ms"]),
+        rewrite_min_chars=int(values["rewrite_min_chars"]),
+        # Absent is a normal state, not an error: it only switches one mode off.
+        gemini_api_key=(os.environ.get(GEMINI_KEY_SETTING) or "").strip(),
         prune_takes_after_days=int(values["prune_takes_after_days"]),
         window_scale=float(values["window_scale"]),
         content_scale=float(values["content_scale"]),

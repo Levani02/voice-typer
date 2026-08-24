@@ -33,10 +33,12 @@ from voice_typer.injector import (
     PASTE_SHORTCUT_LABEL,
     ClipboardUnavailableError,
     PasteFailedError,
+    copy_to_clipboard,
     inject_text,
 )
 from voice_typer.platform_support import open_path
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
+from voice_typer.rewrite import load_prompt, rewrite
 from voice_typer.transcriber import (
     NothingToPasteError,
     Transcriber,
@@ -125,11 +127,13 @@ class App:
         self._started_in_our_window = False  # was this take begun by clicking our button?
         self._watching_focus = threading.Event()
         self._device_label: str | None = None  # looked up once, on first use
-        # False means the words go where the cursor is, as they were spoken. True puts the
-        # instruction from config.json in front of them, so whatever receives the paste —
-        # a chat box with an assistant in it — does the summarising. This app asks no
-        # model anything either way.
+        # False means the words go where the cursor is, exactly as they were spoken —
+        # nothing in this app is allowed to change them. True sends the transcript to
+        # Gemini first and pastes what comes back. The card always says which.
         self._rewrite_mode = False
+        # The transcript as ElevenLabs returned it, kept so the user can ask for their own
+        # words back after a rewrite they did not like.
+        self._last_raw_text = ""
 
     def attach_tray(self, tray: TrayIcon) -> None:
         self._tray = tray
@@ -273,6 +277,18 @@ class App:
     def set_rewrite_mode(self, on: bool) -> None:
         """Used once at startup, to restore the mode the window remembered."""
         self._rewrite_mode = bool(on)
+
+    def copy_raw_text(self) -> None:
+        """Put the last transcript, before any rewriting, back on the clipboard."""
+        if not self._last_raw_text:
+            self._notify("ჯერ არაფერი ჩაგიწერია")
+            return
+        try:
+            copy_to_clipboard(self._last_raw_text)
+        except ClipboardUnavailableError as exc:
+            self._report_error(str(exc), "clipboard დაკავებულია")
+            return
+        self._notify(f"ნედლი ტექსტი clipboard-შია — დააჭირე {PASTE_SHORTCUT_LABEL}")
 
     def toggle_rewrite_mode(self) -> None:
         """The window's mode switch."""
@@ -473,13 +489,28 @@ class App:
     def _compose(self, text: str) -> str:
         """What actually goes on the clipboard.
 
-        In rewrite mode the instruction rides in front of the words. Nothing is sent
-        anywhere and nothing is rewritten here — the text is simply addressed to whatever
-        is on the other side of the paste.
+        In the words mode this is the transcript, untouched by any model — that is the
+        whole value of that mode. In the rewrite mode it is what Gemini made of it, and if
+        that did not arrive it is the transcript again, with a line on screen saying so.
         """
-        if not self._rewrite_mode or not self._config.rewrite_instruction:
+        self._last_raw_text = text
+        if not self._rewrite_mode:
             return text
-        return f"{self._config.rewrite_instruction}\n\n{text}"
+
+        result = rewrite(
+            text,
+            api_key=self._config.gemini_api_key,
+            model=self._config.rewrite_model,
+            prompt=load_prompt(self._config.rewrite_prompt_path),
+            timeout_ms=self._config.rewrite_timeout_ms,
+            min_chars=self._config.rewrite_min_chars,
+        )
+        if not result.rewritten:
+            # Not an error state — the words are landing either way. But saying nothing
+            # would leave the user thinking the mode is broken when it is behaving as
+            # designed: a missing key and a dropped network look identical on screen.
+            self._notify(f"გამართვის გარეშე ჩაისვა — {result.fallback_reason}")
+        return result.text
 
     def _record_usage(self, transcript: Transcript, measured_seconds: float) -> None:
         """Prefer the duration ElevenLabs billed for — that is what the invoice will say."""
@@ -574,6 +605,15 @@ class App:
 
     def open_settings(self) -> None:
         open_path(CONFIG_PATH)  # a fixed path, never taken from config
+
+    def open_rewrite_prompt(self) -> None:
+        """Open the instruction the rewrite mode sends, for editing.
+
+        The name comes from config.json, but validation confines it to a plain `.md` file
+        beside config.json — so this stays a fixed folder with a checked filename in it,
+        rather than an arbitrary path a settings file could point anywhere.
+        """
+        open_path(self._config.rewrite_prompt_path)
 
     # ------------------------------------------------------------------------- helpers
 

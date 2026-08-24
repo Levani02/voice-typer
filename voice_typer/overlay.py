@@ -152,6 +152,8 @@ class Controller(Protocol):
     def ui_hotkey_label(self) -> str: ...
     def ui_device_label(self) -> str: ...
     def ui_rewrite_mode(self) -> bool: ...
+    def copy_raw_text(self) -> None: ...
+    def open_rewrite_prompt(self) -> None: ...
     def set_rewrite_mode(self, on: bool) -> None: ...
     def toggle_rewrite_mode(self) -> None: ...
     def usage_text(self) -> str: ...
@@ -832,19 +834,33 @@ class OverlayWindow:
             activeforeground=theme.TEXT_BRIGHT,
             borderwidth=0,
         )
-        self._menu.add_command(label="", state="disabled")  # usage, filled in on open
+        # Every entry whose label changes is remembered by name as it is added. Counting
+        # positions by hand is how a menu ends up relabelling the wrong line the next time
+        # somebody inserts an item above it.
+        self._menu_index: dict[str, int] = {}
+        self._add_menu_entry("usage", label="", state="disabled")  # filled in on open
         self._menu.add_separator()
-        self._menu.add_command(
-            label="F9-ის მოსმენა", command=lambda: self._safely(self._controller.toggle_enabled)
+        self._add_menu_entry(
+            "listening",
+            label="F9-ის მოსმენა",
+            command=lambda: self._safely(self._controller.toggle_enabled),
         )
         self._menu.add_command(
             label="ბოლო ჩანაწერის ხელახლა გაგზავნა",
             command=lambda: self._safely(self._controller.retry_last),
         )
         self._menu.add_command(
-            label="გამართვის რეჟიმი", command=lambda: self._safely(self.toggle_rewrite_mode)
+            label="ნედლი ტექსტი clipboard-ში",
+            command=lambda: self._safely(self._controller.copy_raw_text),
         )
-        self._menu.add_command(label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed))
+        self._add_menu_entry(
+            "mode",
+            label="გამართვის რეჟიმი",
+            command=lambda: self._safely(self.toggle_rewrite_mode),
+        )
+        self._add_menu_entry(
+            "fold", label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed)
+        )
         self._menu.add_separator()
         self._menu.add_command(
             label="ლოგების საქაღალდე", command=lambda: self._safely(self._controller.open_logs)
@@ -853,22 +869,37 @@ class OverlayWindow:
             label="პარამეტრები (config.json)",
             command=lambda: self._safely(self._controller.open_settings),
         )
+        self._menu.add_command(
+            label="გამართვის ინსტრუქცია (rewrite-prompt.md)",
+            command=lambda: self._safely(self._controller.open_rewrite_prompt),
+        )
         self._menu.add_separator()
         self._menu.add_command(
             label="გამორთვა", command=lambda: self._safely(self._controller.quit)
         )
+
+    def _add_menu_entry(self, name: str, **options) -> None:
+        """Add an entry and remember where it landed, for `_sync_menu` to find later."""
+        self._menu.add_command(**options)
+        self._menu_index[name] = self._menu.index("end")
 
     def _sync_menu(self) -> None:
         """Bring the menu's live entries up to date. Kept apart from showing it because
         `tk_popup` enters Windows' own modal loop and does not return until the menu is
         dismissed — which nothing can do in a test."""
         listening = self._controller.ui_state() != "disabled"
-        self._menu.entryconfig(0, label=self._controller.usage_text())
-        self._menu.entryconfig(2, label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"))
+        self._menu.entryconfig(self._menu_index["usage"], label=self._controller.usage_text())
         self._menu.entryconfig(
-            4, label=("✓ გამართვის რეჟიმი" if self._rewrite_mode else "გამართვის რეჟიმი")
+            self._menu_index["listening"],
+            label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"),
         )
-        self._menu.entryconfig(5, label=("გაშლა" if self._collapsed else "ჩაკეცვა"))
+        self._menu.entryconfig(
+            self._menu_index["mode"],
+            label=("✓ გამართვის რეჟიმი" if self._rewrite_mode else "გამართვის რეჟიმი"),
+        )
+        self._menu.entryconfig(
+            self._menu_index["fold"], label=("გაშლა" if self._collapsed else "ჩაკეცვა")
+        )
 
     def _show_menu(self, event: tk.Event) -> None:
         self._sync_menu()

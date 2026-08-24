@@ -9,6 +9,7 @@ what a thread just finished, and no two jobs ever paste over each other.
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -49,7 +50,14 @@ def make_config(**overrides) -> Config:
         # Off by default here so the app tests read the transcriber's own output. The
         # filtering itself is tested where it lives, in `test_fillers.py`.
         "filler_words": (),
-        "rewrite_instruction": "შეაჯამე:",
+        "rewrite_model": "gemini-2.5-flash",
+        "rewrite_prompt_path": Path("rewrite-prompt.md"),
+        "rewrite_timeout_ms": 7000,
+        "rewrite_min_chars": 0,
+        # Empty on purpose. No automatic test here reaches a network or spends money, and
+        # an absent key is exactly what makes the rewrite fall back to the raw transcript
+        # — which is the behaviour these tests exist to pin down.
+        "gemini_api_key": "",
         "prune_takes_after_days": 7,
         "window_scale": 1.0,
         "content_scale": 1.0,
@@ -826,19 +834,33 @@ def test_the_words_go_out_alone_in_the_ordinary_mode(logs, pasted):
     assert pasted == [TRANSCRIPT]
 
 
-def test_rewrite_mode_puts_the_instruction_in_front_of_the_words(logs, pasted):
-    """The app asks no model anything. The instruction rides along to whatever receives
-    the paste, which is why the transcript has to survive underneath it, word for word."""
-    app = build_app(make_config(rewrite_instruction="შეაჯამე:"))
+def test_the_words_still_land_when_the_rewrite_cannot_run(logs, pasted):
+    """No key, no network, no answer — the transcript is pasted anyway. This is the rule
+    the whole mode is built around: a rewrite is an improvement that may not arrive, never
+    a step that can swallow a dictation."""
+    app = build_app()
     app.toggle_rewrite_mode()
 
     run_one_job(app)
 
-    assert pasted == [f"შეაჯამე:\n\n{TRANSCRIPT}"]
+    assert pasted == [TRANSCRIPT]
+    assert kept_recordings() == []  # a successful dictation, so the audio goes
+
+
+def test_the_user_is_told_when_the_words_went_out_unpolished(logs, pasted):
+    """Silence would read as "the mode is broken" — a missing key and a dropped network
+    look identical from the outside."""
+    tray = FakeTray()
+    app = build_app(tray=tray)
+    app.toggle_rewrite_mode()
+
+    run_one_job(app)
+
+    assert any("გამართვის გარეშე" in message for message in tray.messages)
 
 
 def test_switching_the_mode_back_pastes_the_words_again(logs, pasted):
-    app = build_app(make_config(rewrite_instruction="შეაჯამე:"))
+    app = build_app()
     app.toggle_rewrite_mode()
     app.toggle_rewrite_mode()
 
@@ -848,13 +870,37 @@ def test_switching_the_mode_back_pastes_the_words_again(logs, pasted):
 
 
 def test_the_mode_the_window_remembered_is_the_one_that_is_used(logs, pasted):
-    app = build_app(make_config(rewrite_instruction="შეაჯამე:"))
+    app = build_app()
     app.set_rewrite_mode(True)
 
     run_one_job(app)
 
-    assert pasted[0].startswith("შეაჯამე:")
     assert app.ui_rewrite_mode() is True
+
+
+def test_the_raw_transcript_can_be_asked_for_after_the_fact(logs, pasted, monkeypatch):
+    """The way back, for a rewrite the user did not want. It only reaches the clipboard —
+    a second paste seconds later could land in a window they have since left."""
+    copied: list[str] = []
+    monkeypatch.setattr(app_module, "copy_to_clipboard", copied.append)
+    app = build_app()
+    run_one_job(app)
+
+    app.copy_raw_text()
+
+    assert copied == [TRANSCRIPT]
+
+
+def test_asking_for_the_raw_transcript_before_dictating_says_so(logs, monkeypatch):
+    copied: list[str] = []
+    monkeypatch.setattr(app_module, "copy_to_clipboard", copied.append)
+    tray = FakeTray()
+    app = build_app(tray=tray)
+
+    app.copy_raw_text()
+
+    assert copied == []
+    assert tray.messages
 
 
 def test_a_recording_of_only_hesitation_keeps_its_audio_and_pastes_nothing(logs, pasted):

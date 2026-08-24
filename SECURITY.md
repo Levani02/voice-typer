@@ -7,7 +7,7 @@ Please do not open a public issue for a security problem.
 
 Expected response: an acknowledgement within 3 days, and an assessment within 7 days.
 
-## What this tool handles
+## What tool handles
 
 Two things worth protecting:
 
@@ -43,3 +43,23 @@ The transcript passes through the Windows clipboard on its way into the focused
 application. While it is there — a fraction of a second, after which the previous clipboard
 contents are restored — any other running program can read it. This is inherent to pasting
 text into arbitrary applications and is not something the app can prevent.
+
+## Where the text goes
+
+Audio goes to ElevenLabs. That is what the tool is for, and it has always been true.
+
+In the **rewrite mode only**, the transcript — text, never audio — is also sent to Google's
+Gemini API so that it can come back tidied. That mode is off by default, the card says when
+it is on, and the words mode sends the text nowhere at all.
+
+- `GEMINI_API_KEY` sits beside the ElevenLabs key under the same rules: never in code,
+  never in a log, never in an error message, never echoed back in a reply.
+- It is optional. Without it the rewrite mode pastes the raw transcript and says so.
+- The clipboard is **never** sent as context. This app pastes through the clipboard, so
+  including it would feed the model its own previous output — and whatever else the user
+  happened to have copied.
+- The instruction sent alongside the text is `rewrite-prompt.md`, in plain sight beside
+  the settings file. Nothing is appended to it at runtime.
+- `rewrite_prompt_file` names a file, not a path: no folders, no `..`, and it must end in
+  `.md`. The window's menu opens that file, and a settings value must never be able to
+  point a menu action at an arbitrary place on the disk.

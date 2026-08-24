@@ -6,6 +6,9 @@ pynput>=1.7.7
 # them itself: AppKit for handing the focus back, HIServices for the Accessibility check.
 pyobjc-framework-Cocoa>=8.0; sys_platform == "darwin"
 pyobjc-framework-ApplicationServices>=8.0; sys_platform == "darwin"
+# The rewrite mode only. Imported lazily, so a missing wheel costs nothing until the
+# mode is switched on — and even then the raw transcript is what lands.
+google-genai>=2.0.0
 pyperclip>=1.9.0
 pystray>=0.19.5
 # pystray accepts any Pillow. Majors ship every October and have broken it before, so the

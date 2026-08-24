@@ -89,6 +89,11 @@ def build_command() -> list[str]:
         "--windowed",  # no console window on either system
         "--add-data",
         f"{PROJECT_ROOT / 'config.json'}{DATA_SEPARATOR}.",
+        # The rewrite instruction travels with the app and is written out beside the
+        # settings on first run — the menu offers to open it, so it has to be a real file
+        # somewhere that survives the app exiting.
+        "--add-data",
+        f"{PROJECT_ROOT / 'rewrite-prompt.md'}{DATA_SEPARATOR}.",
         "--collect-all",
         "sounddevice",
     ]
