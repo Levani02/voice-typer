@@ -96,6 +96,12 @@ def build_command() -> list[str]:
         f"{PROJECT_ROOT / 'rewrite-prompt.md'}{DATA_SEPARATOR}.",
         "--collect-all",
         "sounddevice",
+        # `google` is a namespace package and `rewrite.py` imports it inside a function,
+        # so PyInstaller's analysis can miss it entirely. It would fail quietly, too: the
+        # rewrite catches the import error and pastes the raw transcript, so the mode would
+        # simply never work in a packaged build while working perfectly from source.
+        "--collect-all",
+        "google.genai",
     ]
 
     if IS_WINDOWS:
