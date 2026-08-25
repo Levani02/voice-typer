@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
@@ -99,9 +102,9 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "clipboard_restore_delay_ms": (0, 5_000),
     "price_per_hour_usd": (0, 100),
     "prune_takes_after_days": (1, 365),
-    # The lower bound is Gemini's, not ours: it rejects any deadline below ten seconds
-    # with a 400, so a smaller value here would fail every single rewrite rather than
-    # merely hurry it. Over half a minute nobody is still waiting for their own sentence.
+    # The lower bound is Gemini's, not ours — see GEMINI_MIN_TIMEOUT_MS. A smaller value
+    # is raised to it rather than rejected, so this bound is never the one that fires.
+    # Over half a minute and nobody is still waiting for their own sentence.
     "rewrite_timeout_ms": (10_000, 30_000),
     "rewrite_min_chars": (0, 1_000),
     # How large the recorder window is drawn, on top of the display's own scaling. Below
@@ -115,6 +118,11 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
 # Above this many key terms ElevenLabs bills a 20-second minimum per request, which would
 # cost several times more than a short dictation. Rejected at startup rather than silently
 # trimmed, so the user is not billed for a setting they thought was in effect.
+# Gemini answers "Manually set deadline 7s is too short. Minimum allowed deadline is
+# 10s." with a 400 — before it looks at the text — so this is the API's number, not a
+# preference. Anything below it fails every rewrite rather than merely hurrying one.
+GEMINI_MIN_TIMEOUT_MS = 10_000
+
 MAX_KEYTERMS = 100
 
 # Far past any language's stock of hesitation noises. A longer list is a mistake, and
@@ -192,8 +200,30 @@ def _read_config_file(path: Path) -> dict[str, object]:
     return {**DEFAULTS, **raw}
 
 
+def _raise_rewrite_timeout_to_the_floor(values: dict[str, object]) -> None:
+    """Correct a deadline Gemini would refuse, rather than refusing to start.
+
+    0.1.5-beta.1 shipped `"rewrite_timeout_ms": 7000` and every rewrite came back a
+    400, so that number is sitting in config.json files on machines this project will
+    never see. Rejecting it would turn a broken feature into an app that will not
+    open — punishing the user for a value they did not choose. It is raised to the
+    floor and the log says so, which is the one place the change can still be found.
+    """
+    value = values["rewrite_timeout_ms"]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return  # not a number: _validate_ranges owns that message
+    if value < GEMINI_MIN_TIMEOUT_MS:
+        logger.warning(
+            "rewrite_timeout_ms is %s, which Gemini refuses outright — using %s instead",
+            value,
+            GEMINI_MIN_TIMEOUT_MS,
+        )
+        values["rewrite_timeout_ms"] = GEMINI_MIN_TIMEOUT_MS
+
+
 def _validate_ranges(values: dict[str, object]) -> None:
     """Reject numbers outside their sane range before they reach the audio or API layer."""
+    _raise_rewrite_timeout_to_the_floor(values)
     for name, (low, high) in NUMERIC_RANGES.items():
         value = values[name]
         if not isinstance(value, int | float) or isinstance(value, bool):

@@ -263,13 +263,13 @@ def test_the_rewrite_timeout_has_to_be_a_sane_wait(tmp_path):
         load_config(write_config(tmp_path, {"rewrite_timeout_ms": 120_000}))
 
 
-def test_a_rewrite_timeout_under_geminis_floor_is_rejected(tmp_path):
+def test_a_rewrite_timeout_under_geminis_floor_is_raised_to_it(tmp_path):
     """0.1.5-beta.1 shipped 7000 here and every single rewrite came back a 400 —
     "Manually set deadline 7s is too short" — so the words mode and the rewrite mode
-    pasted identical text. The floor is the API's and belongs in validation, where a
-    bad value is caught at startup, rather than in a comment nobody reads."""
-    with pytest.raises(ConfigError, match="rewrite_timeout_ms"):
-        load_config(write_config(tmp_path, {"rewrite_timeout_ms": 7_000}))
+    pasted identical text. Those files still exist, so the value is corrected rather
+    than rejected: an app that will not open is a worse answer than one that starts."""
+    cfg = load_config(write_config(tmp_path, {"rewrite_timeout_ms": 7_000}))
+    assert cfg.rewrite_timeout_ms == 10_000
 
 
 def test_the_default_rewrite_timeout_clears_that_floor(tmp_path):
