@@ -21,7 +21,8 @@ from voice_typer import widget_theme as theme
 # Importing the overlay first is deliberate: it points Tcl at the base Python install,
 # without which Tk cannot start from inside the virtual environment at all — and this
 # whole file would quietly skip, which is worse than failing.
-from voice_typer.overlay import APPEARANCE, BAR_COUNT, WINDOW_WIDTH, OverlayWindow, tk
+from voice_typer.card_layout import APPEARANCE, BAR_COUNT, WINDOW_WIDTH
+from voice_typer.overlay import OverlayWindow, tk
 
 
 class StubController:

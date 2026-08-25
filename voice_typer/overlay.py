@@ -28,7 +28,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -63,86 +63,9 @@ _point_tcl_at_the_base_installation()
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
 from voice_typer import card_glyphs, window_platform, window_state  # noqa: E402
+from voice_typer import card_layout as layout  # noqa: E402
 from voice_typer import widget_theme as theme  # noqa: E402
 from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
-
-REFRESH_MS = 70  # fast enough for the level bars to look alive
-
-# Design pixels at 100% scaling. Nothing here is used raw — see `_s`.
-WINDOW_WIDTH = 520
-WINDOW_HEIGHT = 176
-# Collapsed, the card keeps only what someone glances at while dictating: is it listening,
-# and for how long. Every control goes away — the hotkey does not, which is the whole
-# point of being allowed to fold the window out of the way.
-COLLAPSED_WIDTH = 196
-COLLAPSED_HEIGHT = 56
-COLLAPSED_RADIUS = 14
-COLLAPSED_PAD = 16
-# Folded, the strip grows only in the mode that has something to announce. Rewrite mode
-# changes what lands at the cursor, so it is never allowed to hide behind a folded card.
-COLLAPSED_MODE_EXTRA = 104
-MODE_PILL_WIDTH = 132
-MODE_PILL_HEIGHT = 19
-
-# Clear air between the mode pill and a notice, in design pixels.
-NOTICE_GAP = 10
-CARD_MARGIN = 6
-CARD_RADIUS = 18
-BUTTON_RADIUS = 10
-PAD = 22
-STATUS_BASELINE = 34
-METER_MIDDLE = 70
-BUTTON_TOP = 92
-BUTTON_BOTTOM = 130
-FOOTER_BASELINE = 152
-
-BAR_COUNT = 58
-BAR_GAP = 2
-METER_HEIGHT = 20
-BAR_MIN_HEIGHT = 1
-
-# The window opens near the bottom-right rather than bottom-centre: chat boxes, search
-# bars and command palettes all live at the bottom-centre of a maximised window, which is
-# precisely where someone dictating is looking.
-EDGE_MARGIN = 24
-TASKBAR_ALLOWANCE = 72
-
-RED = "#f06868"
-AMBER = "#e9a75f"
-ORANGE = "#ffa53a"
-
-
-@dataclass(frozen=True)
-class Look:
-    """How each surface is coloured in one state.
-
-    One colour per state was the obvious first shape and it was wrong: painting the dot,
-    the timer, all 58 meter bars and the microphone the same red turned the whole card
-    into a warning light the moment recording began. The design keeps the waveform teal
-    while recording and puts the emphasis on the timer instead.
-    """
-
-    words: str
-    dot: str
-    wave: str
-    timer: str
-    mic: str
-
-
-APPEARANCE = {
-    "idle": Look("მზადაა", theme.ACCENT, theme.ACCENT, theme.ACCENT, theme.ACCENT),
-    "recording": Look("იწერს", RED, theme.ACCENT, "#ffffff", RED),
-    "paused": Look("პაუზა", AMBER, AMBER, theme.ACCENT, RED),
-    "transcribing": Look("გარდაქმნა", ORANGE, ORANGE, theme.ACCENT, theme.ACCENT),
-    "error": Look("შეცდომა", "#f06565", "#f06565", "#f06565", theme.ACCENT),
-    "disabled": Look(
-        "გამორთულია",
-        theme.DISABLED_INK,
-        theme.DISABLED_INK,
-        theme.DISABLED_INK,
-        theme.DISABLED_INK,
-    ),
-}
 
 
 class Controller(Protocol):
@@ -171,30 +94,6 @@ class Controller(Protocol):
     def quit(self) -> None: ...
 
 
-@dataclass
-class Button:
-    """One drawn button: where it is, what it is made of, and what it does."""
-
-    box: tuple[int, int, int, int]
-    command: Callable[[], None]
-    top: str
-    bottom: str
-    top_hover: str
-    bottom_hover: str
-    fill_items: list[int] = field(default_factory=list)
-    enabled: bool = True
-    hovered: bool = False
-
-    def contains(self, x: int, y: int) -> bool:
-        x0, y0, x1, y1 = self.box
-        return x0 <= x <= x1 and y0 <= y <= y1
-
-
-def _format_elapsed(seconds: float) -> str:
-    whole = int(max(0.0, seconds))
-    return f"{whole // 60}:{whole % 60:02d}"
-
-
 class OverlayWindow:
     """The floating recorder. `run` blocks and owns the main thread."""
 
@@ -210,20 +109,18 @@ class OverlayWindow:
         self._drag_origin: tuple[int, int] | None = None
         self._pressed: str | None = None
         self._closing = False
-        self._buttons: dict[str, Button] = {}
+        self._buttons: dict[str, layout.Button] = {}
         self._bars: list[int] = []
-        self._levels = [0.0] * BAR_COUNT
+        self._levels = [0.0] * layout.BAR_COUNT
         self._meter_settled = False
         self._meter_colour = ""
         # The display's own scaling, then the user's preference on top of it. Both go
         # through the same multiplier, so a smaller window is drawn small rather than
-        # drawn large and shrunk — which is what would make it soft again.
+        # drawn large and shrunk — which is what would make it soft again. Text and icons
+        # carry a second factor, so lettering stays readable at a card size that would
+        # otherwise make it squint-small.
         self._scale = window_platform.display_scale() * window_scale
-        # Text and icons carry a second factor. Halving the card also halved the writing,
-        # which is legible but harder to read at a glance than it needs to be — and a
-        # status display is meant to be read at a glance. Positions still come from
-        # `_s`, so the layout does not move when the lettering grows.
-        self._content_scale = self._scale * content_scale
+        self._m = layout.Metrics(self._scale, self._scale * content_scale)
 
         # Folded away or open, and which mode — restored from where the user left them.
         # One record, compared whole in `_save_position`, so a new remembered field can
@@ -241,8 +138,8 @@ class OverlayWindow:
         self._build_window()
         self._canvas = tk.Canvas(
             self._root,
-            width=self._s(self._card_width()),
-            height=self._s(self._card_height()),
+            width=self._m.s(self._design_width),
+            height=self._m.s(self._design_height),
             highlightthickness=0,
             bg=self._backdrop,
         )
@@ -258,30 +155,14 @@ class OverlayWindow:
 
     # ------------------------------------------------------------------------ measuring
 
-    def _card_width(self) -> int:
-        """The card's width in design pixels, for whichever shape it is wearing."""
-        if not self._collapsed:
-            return WINDOW_WIDTH
-        return COLLAPSED_WIDTH + (COLLAPSED_MODE_EXTRA if self._rewrite_mode else 0)
+    @property
+    def _design_width(self) -> int:
+        """The card's width in design pixels, for whichever shape it is currently wearing."""
+        return self._m.card_width(folded=self._collapsed, rewrite=self._rewrite_mode)
 
-    def _card_height(self) -> int:
-        return COLLAPSED_HEIGHT if self._collapsed else WINDOW_HEIGHT
-
-    def _s(self, value: float) -> int:
-        """A design measurement in real screen pixels. Use for anything positional."""
-        return round(value * self._scale)
-
-    def _c(self, value: float) -> int:
-        """The same, for the size of a glyph or the box around a piece of text.
-
-        Separate from `_s` so lettering and icons can be readable at a card size that
-        would otherwise make them squint-small, without the layout shifting around them.
-        """
-        return round(value * self._content_scale)
-
-    def _font(self, family: str, design_px: int, weight: str = "normal") -> tuple:
-        """A font sized in pixels — negative means pixels to Tk, which points would not."""
-        return (family, -max(1, self._c(design_px)), weight)
+    @property
+    def _design_height(self) -> int:
+        return self._m.card_height(folded=self._collapsed)
 
     # ------------------------------------------------------------------------ the window
 
@@ -306,7 +187,9 @@ class OverlayWindow:
         # an unreachable corner falls back. Recording the real one is what stops the
         # first plain click from rewriting the file with the same values.
         self._saved_state = replace(self._saved_state, position=(x, y))
-        self._root.geometry(f"{self._s(self._card_width())}x{self._s(self._card_height())}+{x}+{y}")
+        self._root.geometry(
+            f"{self._m.s(self._design_width)}x{self._m.s(self._design_height)}+{x}+{y}"
+        )
         self._root.protocol("WM_DELETE_WINDOW", lambda: self._safely(self._controller.quit))
 
     # ------------------------------------------------------------------------- painting
@@ -316,17 +199,17 @@ class OverlayWindow:
             self._paint_collapsed_card()
             return
 
-        margin = self._s(CARD_MARGIN)
+        margin = self._m.s(layout.CARD_MARGIN)
         card = (
             margin,
             margin,
-            self._s(WINDOW_WIDTH) - margin,
-            self._s(WINDOW_HEIGHT) - margin,
+            self._m.s(layout.WINDOW_WIDTH) - margin,
+            self._m.s(layout.WINDOW_HEIGHT) - margin,
         )
         theme.rounded_gradient(
-            self._canvas, card, self._s(CARD_RADIUS), theme.CARD_TOP, theme.CARD_BOTTOM
+            self._canvas, card, self._m.s(layout.CARD_RADIUS), theme.CARD_TOP, theme.CARD_BOTTOM
         )
-        theme.rounded_outline(self._canvas, card, self._s(CARD_RADIUS), theme.CARD_BORDER)
+        theme.rounded_outline(self._canvas, card, self._m.s(layout.CARD_RADIUS), theme.CARD_BORDER)
 
         self._paint_status_row()
         self._paint_meter()
@@ -340,34 +223,39 @@ class OverlayWindow:
         something the user cannot act on without looking — and someone who folded the
         window away is not looking at it.
         """
-        margin = self._s(CARD_MARGIN)
+        margin = self._m.s(layout.CARD_MARGIN)
         card = (
             margin,
             margin,
-            self._s(self._card_width()) - margin,
-            self._s(COLLAPSED_HEIGHT) - margin,
+            self._m.s(self._design_width) - margin,
+            self._m.s(layout.COLLAPSED_HEIGHT) - margin,
         )
-        radius = self._s(COLLAPSED_RADIUS)
+        radius = self._m.s(layout.COLLAPSED_RADIUS)
         theme.rounded_gradient(self._canvas, card, radius, theme.CARD_TOP, theme.CARD_BOTTOM)
         theme.rounded_outline(self._canvas, card, radius, theme.CARD_BORDER)
 
         y = round((card[1] + card[3]) / 2)  # a gradient is painted row by row: whole pixels
-        left = card[0] + self._s(COLLAPSED_PAD)
-        right = card[2] - self._s(COLLAPSED_PAD)
+        left = card[0] + self._m.s(layout.COLLAPSED_PAD)
+        right = card[2] - self._m.s(layout.COLLAPSED_PAD)
 
         self._dot_items = theme.glow_dot(
-            self._canvas, left + self._c(5), y, self._c(5), theme.ACCENT, theme.CARD_TOP
+            self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
         )
-        toggle = (right - self._c(20), y - self._c(10), right, y + self._c(10))
+        toggle = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
         self._paint_fold_button(toggle, pointing_up=True)
 
-        edge = toggle[0] - self._s(10)
+        edge = toggle[0] - self._m.s(10)
         if self._rewrite_mode:
             # Only in the mode that changes what gets pasted. The ordinary mode says
             # nothing, so anything the folded strip does say is worth reading.
-            pill = (edge - self._s(MODE_PILL_WIDTH * 0.72), y - self._c(9), edge, y + self._c(9))
+            pill = (
+                edge - self._m.s(layout.MODE_PILL_WIDTH * 0.72),
+                y - self._m.c(9),
+                edge,
+                y + self._m.c(9),
+            )
             self._paint_mode_button(pill)
-            edge = pill[0] - self._s(8)
+            edge = pill[0] - self._m.s(8)
 
         self._timer_text = self._canvas.create_text(
             edge,
@@ -375,58 +263,58 @@ class OverlayWindow:
             text="0:00",
             anchor="e",
             fill=theme.ACCENT,
-            font=self._font(theme.MONO_FAMILY, theme.MONO_PX),
+            font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
         )
 
     def _inner_edges(self, bleed: int = 0) -> tuple[int, int]:
-        left = self._s(CARD_MARGIN + PAD - bleed)
-        right = self._s(WINDOW_WIDTH - CARD_MARGIN - PAD + bleed)
+        left = self._m.s(layout.CARD_MARGIN + layout.PAD - bleed)
+        right = self._m.s(layout.WINDOW_WIDTH - layout.CARD_MARGIN - layout.PAD + bleed)
         return left, right
 
     def _paint_status_row(self) -> None:
-        left, right = self._inner_edges()
-        y = self._s(STATUS_BASELINE)
+        left, right = self._m.inner_edges()
+        y = self._m.s(layout.STATUS_BASELINE)
 
         self._dot_items = theme.glow_dot(
-            self._canvas, left + self._c(5), y, self._c(5), theme.ACCENT, theme.CARD_TOP
+            self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
         )
         self._status_text = self._canvas.create_text(
-            left + self._c(22),
+            left + self._m.c(22),
             y,
             text="",
             anchor="w",
             fill=theme.TEXT_BRIGHT,
-            font=self._font(theme.UI_FAMILY, theme.STATUS_PX),
+            font=self._m.font(theme.UI_FAMILY, theme.STATUS_PX),
         )
 
         # The fold control sits in the corner rather than in the button row: that row is
         # for what to do with a recording, and folding the window is not one of those.
-        fold = (right - self._c(20), y - self._c(10), right, y + self._c(10))
+        fold = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
         self._paint_fold_button(fold, pointing_up=False)
 
         # The badge is sized with the lettering inside it rather than with the card, or
         # a larger "F9" would push against its own border.
-        badge_right = fold[0] - self._s(10)
-        badge = (badge_right - self._c(34), y - self._c(10), badge_right, y + self._c(10))
-        theme.rounded_gradient(self._canvas, badge, self._c(5), "#26292c", "#1a1d20")
-        theme.rounded_outline(self._canvas, badge, self._c(5), "#3a3e43")
+        badge_right = fold[0] - self._m.s(10)
+        badge = (badge_right - self._m.c(34), y - self._m.c(10), badge_right, y + self._m.c(10))
+        theme.rounded_gradient(self._canvas, badge, self._m.c(5), "#26292c", "#1a1d20")
+        theme.rounded_outline(self._canvas, badge, self._m.c(5), "#3a3e43")
         self._badge_text = self._canvas.create_text(
             (badge[0] + badge[2]) / 2,
             y,
             text="F9",
             fill=theme.TEXT_MUTED,
-            font=self._font(theme.MONO_FAMILY, theme.BADGE_PX),
+            font=self._m.font(theme.MONO_FAMILY, theme.BADGE_PX),
         )
 
         # Measured from the badge, not from the card's edge: the badge is what the timer
         # would collide with, and it is the thing whose width changes.
         self._timer_text = self._canvas.create_text(
-            badge[0] - self._s(12),
+            badge[0] - self._m.s(12),
             y,
             text="0:00",
             anchor="e",
             fill=theme.ACCENT,
-            font=self._font(theme.MONO_FAMILY, theme.MONO_PX),
+            font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
         )
 
     def _paint_mode_button(self, box: tuple[int, int, int, int]) -> None:
@@ -437,7 +325,7 @@ class OverlayWindow:
         """
         box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
         rewrite = self._rewrite_mode
-        button = Button(
+        button = layout.Button(
             box,
             self.toggle_rewrite_mode,
             theme.BUTTON_TOP,
@@ -445,25 +333,27 @@ class OverlayWindow:
             theme.BUTTON_TOP_HOVER,
             theme.BUTTON_BOTTOM_HOVER,
         )
-        radius = self._s(7)
+        radius = self._m.s(7)
         button.fill_items = theme.rounded_gradient(
             self._canvas, box, radius, button.top, button.bottom
         )
-        theme.rounded_outline(self._canvas, box, radius, ORANGE if rewrite else theme.BUTTON_BORDER)
+        theme.rounded_outline(
+            self._canvas, box, radius, layout.ORANGE if rewrite else theme.BUTTON_BORDER
+        )
         self._buttons["mode"] = button
 
         self._canvas.create_text(
             (box[0] + box[2]) / 2,
             (box[1] + box[3]) / 2,
             text="გამართვა" if rewrite else "სიტყვები",
-            fill=ORANGE if rewrite else theme.TEXT_MUTED,
-            font=self._font(theme.UI_FAMILY, theme.FOOTER_PX + 1),
+            fill=layout.ORANGE if rewrite else theme.TEXT_MUTED,
+            font=self._m.font(theme.UI_FAMILY, theme.FOOTER_PX + 1),
         )
 
     def _paint_fold_button(self, box: tuple[int, int, int, int], *, pointing_up: bool) -> None:
         """The one control both shapes of the card have: fold away, or open back up."""
         box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
-        button = Button(
+        button = layout.Button(
             box,
             self.toggle_collapsed,
             theme.BUTTON_TOP,
@@ -471,7 +361,7 @@ class OverlayWindow:
             theme.BUTTON_TOP_HOVER,
             theme.BUTTON_BOTTOM_HOVER,
         )
-        radius = self._s(6)
+        radius = self._m.s(6)
         button.fill_items = theme.rounded_gradient(
             self._canvas, box, radius, button.top, button.bottom
         )
@@ -479,9 +369,9 @@ class OverlayWindow:
         self._buttons["fold"] = button
 
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        arm = self._c(3.8)
-        rise = self._c(2.2)
-        stroke = max(1, self._c(1.5))
+        arm = self._m.c(3.8)
+        rise = self._m.c(2.2)
+        stroke = max(1, self._m.c(1.5))
         tip_y = y - rise if pointing_up else y + rise
         base_y = y + rise if pointing_up else y - rise
         for side in (-arm, arm):
@@ -490,16 +380,16 @@ class OverlayWindow:
             )
 
     def _paint_meter(self) -> None:
-        left, right = self._inner_edges(bleed=4)
-        middle = self._s(METER_MIDDLE)
+        left, right = self._m.inner_edges(bleed=4)
+        middle = self._m.s(layout.METER_MIDDLE)
 
         self._canvas.create_line(
             left, middle, right, middle, fill=theme.blend(theme.ACCENT, theme.CARD_TOP, 0.35)
         )
 
-        gap = self._s(BAR_GAP)
-        span = (right - left - gap * (BAR_COUNT - 1)) / BAR_COUNT
-        for index in range(BAR_COUNT):
+        gap = self._m.s(layout.BAR_GAP)
+        span = (right - left - gap * (layout.BAR_COUNT - 1)) / layout.BAR_COUNT
+        for index in range(layout.BAR_COUNT):
             x = left + index * (span + gap)
             self._bars.append(
                 self._canvas.create_rectangle(
@@ -513,10 +403,10 @@ class OverlayWindow:
             )
 
     def _paint_buttons(self) -> None:
-        left, right = self._inner_edges(bleed=4)
-        top, bottom = self._s(BUTTON_TOP), self._s(BUTTON_BOTTOM)
+        left, right = self._m.inner_edges(bleed=4)
+        top, bottom = self._m.s(layout.BUTTON_TOP), self._m.s(layout.BUTTON_BOTTOM)
         square = bottom - top
-        gap = self._s(8)
+        gap = self._m.s(8)
 
         flexible = right - left - gap * 3 - square * 2
         record_width = round(flexible * 1.15 / 2.15)
@@ -532,9 +422,11 @@ class OverlayWindow:
             theme.BUTTON_TOP_HOVER,
             theme.BUTTON_BOTTOM_HOVER,
         )
-        self._buttons["record"] = Button(record_box, self._controller.toggle_recording, *plain)
-        self._buttons["pause"] = Button(pause_box, self._controller.toggle_pause, *plain)
-        self._buttons["cancel"] = Button(
+        self._buttons["record"] = layout.Button(
+            record_box, self._controller.toggle_recording, *plain
+        )
+        self._buttons["pause"] = layout.Button(pause_box, self._controller.toggle_pause, *plain)
+        self._buttons["cancel"] = layout.Button(
             cancel_box,
             self._controller.cancel_recording,
             theme.CANCEL_TOP,
@@ -542,7 +434,7 @@ class OverlayWindow:
             "#3d3327",
             "#1d1916",
         )
-        self._buttons["power"] = Button(
+        self._buttons["power"] = layout.Button(
             power_box,
             self._controller.quit,
             theme.POWER_TOP,
@@ -551,7 +443,7 @@ class OverlayWindow:
             "#1d1718",
         )
 
-        radius = self._s(BUTTON_RADIUS)
+        radius = self._m.s(layout.BUTTON_RADIUS)
         borders = {"cancel": theme.CANCEL_BORDER, "power": theme.POWER_BORDER}
         # Only the four painted here. The fold control is already drawn, with its own
         # size and its own chevron, and painting it a second time would bury the chevron.
@@ -571,17 +463,17 @@ class OverlayWindow:
 
     def _paint_record_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._s(30)
+        icon_x = box[0] + self._m.s(30)
         self._record_icon = card_glyphs.draw_microphone(
-            self._canvas, icon_x, centre_y, theme.ACCENT, self._c
+            self._canvas, icon_x, centre_y, theme.ACCENT, self._m.c
         )
         self._record_label = self._canvas.create_text(
-            icon_x + self._c(15),
+            icon_x + self._m.c(15),
             centre_y,
             text="ჩაწერა",
             anchor="w",
             fill=theme.TEXT_BRIGHT,
-            font=self._font(theme.UI_FAMILY, theme.BUTTON_PX),
+            font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
         self._centre_in(box, [*self._record_icon, self._record_label])
 
@@ -604,27 +496,27 @@ class OverlayWindow:
 
     def _paint_pause_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._s(30)
+        icon_x = box[0] + self._m.s(30)
         self._pause_bars = card_glyphs.draw_pause_bars(
-            self._canvas, icon_x, centre_y, theme.TEXT_MUTED, self._c
+            self._canvas, icon_x, centre_y, theme.TEXT_MUTED, self._m.c
         )
         self._pause_label = self._canvas.create_text(
-            icon_x + self._c(15),
+            icon_x + self._m.c(15),
             centre_y,
             text="პაუზა",
             anchor="w",
             fill=theme.TEXT_BRIGHT,
-            font=self._font(theme.UI_FAMILY, theme.BUTTON_PX),
+            font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
         self._centre_in(box, [*self._pause_bars, self._pause_label])
 
     def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        self._cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._c)
+        self._cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._m.c)
 
     def _paint_power(self, box: tuple[int, int, int, int], colour: str) -> None:
-        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._s(0.5)
-        card_glyphs.draw_power(self._canvas, x, y, colour, self._c)
+        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._m.s(0.5)
+        card_glyphs.draw_power(self._canvas, x, y, colour, self._m.c)
 
     def _fit_text(self, item: int, text: str, room: int) -> None:
         """Put text on an item, trimmed with an ellipsis until it fits.
@@ -644,18 +536,18 @@ class OverlayWindow:
             self._canvas.itemconfig(item, text=text)
 
     def _paint_footer(self) -> None:
-        left, right = self._inner_edges(bleed=4)
-        y = self._s(FOOTER_BASELINE)
-        font = self._font(theme.MONO_FAMILY, theme.FOOTER_PX)
+        left, right = self._m.inner_edges(bleed=4)
+        y = self._m.s(layout.FOOTER_BASELINE)
+        font = self._m.font(theme.MONO_FAMILY, theme.FOOTER_PX)
         # The mode lives here rather than in the button row: that row is for what to do
         # with a recording, and this decides what happens to the words afterwards. It also
         # has to be readable at a glance, which the footer line is and a fifth square
         # button next to four others would not be.
         pill = (
             left,
-            y - self._s(MODE_PILL_HEIGHT / 2),
-            left + self._s(MODE_PILL_WIDTH),
-            y + self._s(MODE_PILL_HEIGHT / 2),
+            y - self._m.s(layout.MODE_PILL_HEIGHT / 2),
+            left + self._m.s(layout.MODE_PILL_WIDTH),
+            y + self._m.s(layout.MODE_PILL_HEIGHT / 2),
         )
         self._paint_mode_button(pill)
         # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
@@ -670,14 +562,16 @@ class OverlayWindow:
         # show it would make the card lie about what it is doing. In its own family, not
         # the footer's monospace: that font has no Georgian at all.
         self._notice_text = self._canvas.create_text(
-            left + self._s(MODE_PILL_WIDTH) + self._s(NOTICE_GAP),
+            left + self._m.s(layout.MODE_PILL_WIDTH) + self._m.s(layout.NOTICE_GAP),
             y,
             text="",
             anchor="w",
-            fill=AMBER,
-            font=self._font(theme.UI_FAMILY, theme.FOOTER_PX),
+            fill=layout.AMBER,
+            font=self._m.font(theme.UI_FAMILY, theme.FOOTER_PX),
         )
-        self._notice_room = right - self._s(MODE_PILL_WIDTH) - self._s(NOTICE_GAP) - left
+        self._notice_room = (
+            right - self._m.s(layout.MODE_PILL_WIDTH) - self._m.s(layout.NOTICE_GAP) - left
+        )
 
     # ---------------------------------------------------------------------- folding away
 
@@ -714,14 +608,14 @@ class OverlayWindow:
         self._canvas.delete("all")
         self._buttons = {}
         self._bars = []
-        self._levels = [0.0] * BAR_COUNT
+        self._levels = [0.0] * layout.BAR_COUNT
         self._meter_settled = False
         self._meter_colour = ""
         self._pressed = None
         self._drag_origin = None
 
-        width = self._s(self._card_width())
-        height = self._s(self._card_height())
+        width = self._m.s(self._design_width)
+        height = self._m.s(self._design_height)
         # Unfolding at the bottom-right corner would otherwise push most of the card off
         # the screen — which is exactly where this window is by default.
         x, y = window_state.clamp_to_desktop(
@@ -926,13 +820,13 @@ class OverlayWindow:
         Whether the remembered corner is still reachable is `window_state`'s decision,
         which is why it can be tested without a desktop.
         """
-        width, height = self._s(self._card_width()), self._s(self._card_height())
-        margin = self._s(EDGE_MARGIN)
+        width, height = self._m.s(self._design_width), self._m.s(self._design_height)
+        margin = self._m.s(layout.EDGE_MARGIN)
         return window_state.choose_position(
             window_state.read(self._position_path).position,
             default=(
                 self._root.winfo_screenwidth() - width - margin,
-                self._root.winfo_screenheight() - height - self._s(TASKBAR_ALLOWANCE),
+                self._root.winfo_screenheight() - height - self._m.s(layout.TASKBAR_ALLOWANCE),
             ),
             width=width,
             margin=margin,
@@ -966,16 +860,16 @@ class OverlayWindow:
             self._update()
         except Exception:
             logger.exception("painting the window failed")
-        self._root.after(REFRESH_MS, self._refresh)
+        self._root.after(layout.REFRESH_MS, self._refresh)
 
     def _update(self) -> None:
         state = self._controller.ui_state()
-        look = APPEARANCE.get(state, APPEARANCE["idle"])
+        look = layout.APPEARANCE.get(state, layout.APPEARANCE["idle"])
 
         theme.recolour_glow_dot(self._canvas, self._dot_items, look.dot, theme.CARD_TOP)
         self._canvas.itemconfig(
             self._timer_text,
-            text=_format_elapsed(self._controller.ui_elapsed_seconds()),
+            text=layout.format_elapsed(self._controller.ui_elapsed_seconds()),
             fill=look.timer,
         )
         if self._collapsed:
@@ -1013,9 +907,9 @@ class OverlayWindow:
         self._meter_settled = settled
         self._meter_colour = colour
 
-        middle = self._s(METER_MIDDLE)
-        tallest = self._s(METER_HEIGHT) - self._s(2)
-        floor = self._s(BAR_MIN_HEIGHT)
+        middle = self._m.s(layout.METER_MIDDLE)
+        tallest = self._m.s(layout.METER_HEIGHT) - self._m.s(2)
+        floor = self._m.s(layout.BAR_MIN_HEIGHT)
         faded = theme.blend(colour, theme.CARD_TOP, 0.45)
 
         for index, bar in enumerate(self._bars):
@@ -1024,7 +918,7 @@ class OverlayWindow:
             self._canvas.coords(bar, x0, middle - height / 2, x1, middle + height / 2)
             self._canvas.itemconfig(bar, fill=colour if height > floor else faded)
 
-    def _update_buttons(self, state: str, look: Look) -> None:
+    def _update_buttons(self, state: str, look: layout.Look) -> None:
         busy = state in ("recording", "paused")
 
         self._set_enabled("record", state not in ("transcribing", "disabled"))
