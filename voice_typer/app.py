@@ -504,6 +504,7 @@ class App:
             prompt=load_prompt(self._config.rewrite_prompt_path),
             timeout_ms=self._config.rewrite_timeout_ms,
             min_chars=self._config.rewrite_min_chars,
+            min_ratio=self._config.rewrite_min_ratio,
         )
         if not result.rewritten:
             # Not an error state — the words are landing either way. But saying nothing

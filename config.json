@@ -25,6 +25,7 @@
   "rewrite_prompt_file": "rewrite-prompt.md",
   "rewrite_timeout_ms": 12000,
   "rewrite_min_chars": 40,
+  "rewrite_min_ratio": 0.15,
   "prune_takes_after_days": 7,
   "window_scale": 0.5,
   "content_scale": 1.3

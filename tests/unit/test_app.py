@@ -54,6 +54,7 @@ def make_config(**overrides) -> Config:
         "rewrite_prompt_path": Path("rewrite-prompt.md"),
         "rewrite_timeout_ms": 12000,
         "rewrite_min_chars": 0,
+        "rewrite_min_ratio": 0.15,
         # Empty on purpose. No automatic test here reaches a network or spends money, and
         # an absent key is exactly what makes the rewrite fall back to the raw transcript
         # — which is the behaviour these tests exist to pin down.

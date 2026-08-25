@@ -276,6 +276,18 @@ def test_the_default_rewrite_timeout_clears_that_floor(tmp_path):
     assert load_config(tmp_path / "no-such-file.json").rewrite_timeout_ms >= 10_000
 
 
+def test_the_floor_on_how_short_a_rewrite_may_be_has_a_default(tmp_path):
+    assert load_config(tmp_path / "no-such-file.json").rewrite_min_ratio == 0.15
+
+
+@pytest.mark.parametrize("bad", [0.01, 1.5])
+def test_a_rewrite_floor_outside_the_usable_range_is_rejected(tmp_path, bad):
+    """Under a twentieth the check is off in all but name; over nine tenths the mode can
+    only tidy, which is the behaviour the setting exists to leave behind."""
+    with pytest.raises(ConfigError, match="rewrite_min_ratio"):
+        load_config(write_config(tmp_path, {"rewrite_min_ratio": bad}))
+
+
 def test_the_gemini_key_is_absent_by_default_and_that_is_not_an_error(tmp_path, monkeypatch):
     """Without it only the rewrite mode is unavailable. Dictation carries on."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)

@@ -88,6 +88,12 @@ DEFAULTS: dict[str, object] = {
     # Below this, the model is not asked. A short utterance has too little context to tell
     # a fragment from a command, and that is the shape that invents whole paragraphs.
     "rewrite_min_chars": 40,
+    # How short the rewrite may come back before it is refused, as a share of what was
+    # said. The mode condenses, so this is low — but the right number depends on how hard
+    # `rewrite-prompt.md` has been told to squeeze, and that file is edited without a
+    # restart. A floor that can only be moved by editing Python is a floor in the wrong
+    # place. The ceiling stays in code: no prompt should ever want more words back.
+    "rewrite_min_ratio": 0.15,
     "prune_takes_after_days": 7,
     "window_scale": 1.0,
     "content_scale": 1.0,
@@ -107,6 +113,9 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     # Over half a minute and nobody is still waiting for their own sentence.
     "rewrite_timeout_ms": (10_000, 30_000),
     "rewrite_min_chars": (0, 1_000),
+    # Under a twentieth is a headline rather than a condensation; over nine tenths the mode
+    # can only tidy, which is the behaviour this setting exists to leave behind.
+    "rewrite_min_ratio": (0.05, 0.9),
     # How large the recorder window is drawn, on top of the display's own scaling. Below
     # about a third the Georgian labels stop being legible at any DPI.
     "window_scale": (0.3, 2.0),
@@ -170,6 +179,7 @@ class Config:
     rewrite_prompt_path: Path
     rewrite_timeout_ms: int
     rewrite_min_chars: int
+    rewrite_min_ratio: float
     gemini_api_key: str
     prune_takes_after_days: int
     window_scale: float
@@ -455,6 +465,7 @@ def load_config(config_path: Path | None = None) -> Config:
         rewrite_prompt_path=PROJECT_ROOT / str(values["rewrite_prompt_file"]).strip(),
         rewrite_timeout_ms=int(values["rewrite_timeout_ms"]),
         rewrite_min_chars=int(values["rewrite_min_chars"]),
+        rewrite_min_ratio=float(values["rewrite_min_ratio"]),
         # Absent is a normal state, not an error: it only switches one mode off.
         gemini_api_key=(os.environ.get(GEMINI_KEY_SETTING) or "").strip(),
         prune_takes_after_days=int(values["prune_takes_after_days"]),
