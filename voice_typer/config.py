@@ -76,9 +76,12 @@ DEFAULTS: dict[str, object] = {
     # so it can be edited and re-read without a restart — see `rewrite-prompt.md`.
     "rewrite_model": "gemini-2.5-flash",
     "rewrite_prompt_file": "rewrite-prompt.md",
-    # Seven seconds, then the raw transcript is pasted instead. Somebody is watching a
-    # cursor: polished text later is worth less than their own words now.
-    "rewrite_timeout_ms": 7000,
+    # Gemini refuses a deadline under ten seconds outright — "Manually set deadline 7s is
+    # too short" comes back as a 400 before the model is ever asked, so this is not a
+    # dial that can be tuned down to the second or two a rewrite actually takes. Twelve
+    # sits clear of that floor; the wait only reaches it when something is already wrong,
+    # and then the raw transcript is pasted instead.
+    "rewrite_timeout_ms": 12000,
     # Below this, the model is not asked. A short utterance has too little context to tell
     # a fragment from a command, and that is the shape that invents whole paragraphs.
     "rewrite_min_chars": 40,
@@ -96,9 +99,10 @@ NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "clipboard_restore_delay_ms": (0, 5_000),
     "price_per_hour_usd": (0, 100),
     "prune_takes_after_days": (1, 365),
-    # Under a second is not enough for any model to answer; over half a minute nobody is
-    # still waiting for their own sentence.
-    "rewrite_timeout_ms": (1_000, 30_000),
+    # The lower bound is Gemini's, not ours: it rejects any deadline below ten seconds
+    # with a 400, so a smaller value here would fail every single rewrite rather than
+    # merely hurry it. Over half a minute nobody is still waiting for their own sentence.
+    "rewrite_timeout_ms": (10_000, 30_000),
     "rewrite_min_chars": (0, 1_000),
     # How large the recorder window is drawn, on top of the display's own scaling. Below
     # about a third the Georgian labels stop being legible at any DPI.

@@ -52,7 +52,7 @@ def make_config(**overrides) -> Config:
         "filler_words": (),
         "rewrite_model": "gemini-2.5-flash",
         "rewrite_prompt_path": Path("rewrite-prompt.md"),
-        "rewrite_timeout_ms": 7000,
+        "rewrite_timeout_ms": 12000,
         "rewrite_min_chars": 0,
         # Empty on purpose. No automatic test here reaches a network or spends money, and
         # an absent key is exactly what makes the rewrite fall back to the raw transcript

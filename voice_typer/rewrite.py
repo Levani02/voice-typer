@@ -174,6 +174,8 @@ def _ask(
             # tokens to a task that is not a reasoning problem. Somebody is watching a
             # cursor while this runs.
             thinking_config=types.ThinkingConfig(thinking_budget=0),
+            # Gemini enforces a floor of ten seconds here and answers a 400 to anything
+            # below it — which is why config.json cannot go lower either.
             http_options=types.HttpOptions(timeout=timeout_ms),
         ),
     )

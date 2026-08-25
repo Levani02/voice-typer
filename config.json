@@ -23,7 +23,7 @@
   ],
   "rewrite_model": "gemini-2.5-flash",
   "rewrite_prompt_file": "rewrite-prompt.md",
-  "rewrite_timeout_ms": 7000,
+  "rewrite_timeout_ms": 12000,
   "rewrite_min_chars": 40,
   "prune_takes_after_days": 7,
   "window_scale": 0.5,
