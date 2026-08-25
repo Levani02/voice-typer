@@ -589,10 +589,11 @@ def test_the_window_hands_the_remembered_mode_to_the_app_at_startup(window):
     """The window owns the file; the app owns what goes on the clipboard. This is the
     one line that connects them, and getting it wrong would paste an instruction the
     user never asked for."""
-    overlay, controller, _ = window
+    _overlay, controller, _ = window
     controller.rewrite_mode = True
 
-    overlay._read_saved_state()  # the real path is exercised in the constructor
+    # The real path is exercised in the constructor; the file format itself is pinned
+    # by tests/unit/test_window_state.py, which needs no desktop to run.
     controller.set_rewrite_mode(False)
 
     assert controller.rewrite_mode is False

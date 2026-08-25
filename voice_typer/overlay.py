@@ -24,12 +24,11 @@ load-bearing rather than cosmetic:
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -63,7 +62,7 @@ _point_tcl_at_the_base_installation()
 
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
-from voice_typer import card_glyphs, window_platform  # noqa: E402
+from voice_typer import card_glyphs, window_platform, window_state  # noqa: E402
 from voice_typer import widget_theme as theme  # noqa: E402
 from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
 
@@ -227,13 +226,13 @@ class OverlayWindow:
         self._content_scale = self._scale * content_scale
 
         # Folded away or open, and which mode — restored from where the user left them.
-        saved = self._read_saved_state()
-        self._collapsed = bool(saved.get("collapsed", False))
-        self._saved_collapsed = self._collapsed
+        # One record, compared whole in `_save_position`, so a new remembered field can
+        # never be added to the file and forgotten in the comparison.
+        self._saved_state = window_state.read(self._position_path)
+        self._collapsed = self._saved_state.collapsed
         # The window owns the file this was written to, so it restores the value and hands
         # it to the app, which is the one that decides what goes on the clipboard.
-        self._rewrite_mode = bool(saved.get("rewrite_mode", False))
-        self._saved_rewrite_mode = self._rewrite_mode
+        self._rewrite_mode = self._saved_state.rewrite_mode
         controller.set_rewrite_mode(self._rewrite_mode)
 
         # No withdraw/deiconify here: on Windows a borderless window that is hidden and
@@ -303,7 +302,10 @@ class OverlayWindow:
         )
         self._root.configure(bg=self._backdrop)
         x, y = self._restore_position()
-        self._saved_position = (x, y)
+        # Where the card actually opened, which is not always what the file asked for —
+        # an unreachable corner falls back. Recording the real one is what stops the
+        # first plain click from rewriting the file with the same values.
+        self._saved_state = replace(self._saved_state, position=(x, y))
         self._root.geometry(f"{self._s(self._card_width())}x{self._s(self._card_height())}+{x}+{y}")
         self._root.protocol("WM_DELETE_WINDOW", lambda: self._safely(self._controller.quit))
 
@@ -722,9 +724,12 @@ class OverlayWindow:
         height = self._s(self._card_height())
         # Unfolding at the bottom-right corner would otherwise push most of the card off
         # the screen — which is exactly where this window is by default.
-        left, top, right, bottom = self._desktop_bounds()
-        x = max(left, min(self._root.winfo_x(), right - width))
-        y = max(top, min(self._root.winfo_y(), bottom - height))
+        x, y = window_state.clamp_to_desktop(
+            (self._root.winfo_x(), self._root.winfo_y()),
+            width=width,
+            height=height,
+            bounds=self._desktop_bounds(),
+        )
 
         self._canvas.config(width=width, height=height)
         self._root.geometry(f"{width}x{height}+{x}+{y}")
@@ -914,63 +919,39 @@ class OverlayWindow:
             return bounds
         return 0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight()
 
-    def _read_saved_state(self) -> dict:
-        """Whatever was written last time, or nothing. Never raises: a file that cannot
-        be read means the window opens in its default corner, which is not a failure."""
-        try:
-            saved = json.loads(self._position_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return saved if isinstance(saved, dict) else {}
-
     def _restore_position(self) -> tuple[int, int]:
-        """Put the window back where the user left it, if that is still on screen."""
+        """Put the window back where the user left it, if that is still on screen.
+
+        Only the Tk questions live here — how big this card is and how big the screen is.
+        Whether the remembered corner is still reachable is `window_state`'s decision,
+        which is why it can be tested without a desktop.
+        """
         width, height = self._s(self._card_width()), self._s(self._card_height())
         margin = self._s(EDGE_MARGIN)
-        default = (
-            self._root.winfo_screenwidth() - width - margin,
-            self._root.winfo_screenheight() - height - self._s(TASKBAR_ALLOWANCE),
+        return window_state.choose_position(
+            window_state.read(self._position_path).position,
+            default=(
+                self._root.winfo_screenwidth() - width - margin,
+                self._root.winfo_screenheight() - height - self._s(TASKBAR_ALLOWANCE),
+            ),
+            width=width,
+            margin=margin,
+            bounds=self._desktop_bounds(),
         )
-        saved = self._read_saved_state()
-        try:
-            x, y = int(saved["x"]), int(saved["y"])
-        except (KeyError, ValueError, TypeError):
-            return default
-
-        # Enough of the card must remain reachable to grab and drag it back.
-        left, top, right, bottom = self._desktop_bounds()
-        on_screen_x = left - width + margin < x < right - margin
-        on_screen_y = top - margin < y < bottom - margin
-        return (x, y) if on_screen_x and on_screen_y else default
 
     def _save_position(self) -> None:
         """Only when something actually changed — a plain click used to rewrite the file."""
-        position = (self._root.winfo_x(), self._root.winfo_y())
-        unchanged = (
-            position == self._saved_position
-            and self._collapsed == self._saved_collapsed
-            and self._rewrite_mode == self._saved_rewrite_mode
+        current = window_state.SavedWindow(
+            position=(self._root.winfo_x(), self._root.winfo_y()),
+            collapsed=self._collapsed,
+            rewrite_mode=self._rewrite_mode,
         )
-        if unchanged:
+        if current == self._saved_state:
             return
-        try:
-            self._position_path.parent.mkdir(parents=True, exist_ok=True)
-            self._position_path.write_text(
-                json.dumps(
-                    {
-                        "x": position[0],
-                        "y": position[1],
-                        "collapsed": self._collapsed,
-                        "rewrite_mode": self._rewrite_mode,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            self._saved_position = position
-            self._saved_collapsed = self._collapsed
-            self._saved_rewrite_mode = self._rewrite_mode
-        except OSError as exc:
-            logger.warning("could not remember the window position: %s", exc)
+        # Remembered only once it is really on disk; a failed write must not leave the
+        # next comparison believing the file already agrees.
+        if window_state.write(self._position_path, current):
+            self._saved_state = current
 
     # -------------------------------------------------------------------------- refresh
 
