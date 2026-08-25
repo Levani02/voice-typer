@@ -20,12 +20,12 @@ Three rules hold everywhere below, because breaking any of them loses the user's
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+from voice_typer import takes
 from voice_typer.config import CONFIG_PATH, LOGS_DIR, Config, current_gemini_key
 from voice_typer.focus import foreground_window, is_our_window
 from voice_typer.hotkey import Action, HotkeyListener
@@ -62,8 +62,10 @@ from voice_typer.tray import TrayIcon, TrayState
 logger = logging.getLogger(__name__)
 
 PENDING_DIR = LOGS_DIR / "pending"
-PENDING_PATTERN = "take-*.wav"
-PENDING_NUMBER = re.compile(r"take-(\d+)\.wav$")
+# Re-exported from `takes`, because the tests point their temporary folder at this
+# module's names — moving them outright would send the suite at the real logs folder.
+PENDING_PATTERN = takes.PENDING_PATTERN
+PENDING_NUMBER = takes.PENDING_NUMBER
 LAST_TRANSCRIPT_PATH = LOGS_DIR / "last_transcript.txt"
 USAGE_PATH = LOGS_DIR / "usage.json"
 
@@ -97,7 +99,6 @@ REASON_IN_GEORGIAN = {
 # the thread that draws the tray icon, which would otherwise look frozen.
 SHUTDOWN_WAIT_SECONDS = 5.0
 
-SECONDS_PER_DAY = 86_400
 
 # How often to note which window the user is working in. One Win32 call, so the cost is
 # nil; often enough that clicking this app's own button cannot outrun it.
@@ -180,8 +181,8 @@ class App:
         self._tray = tray
 
     def start(self) -> None:
-        self._prune_old_takes()
-        self._take_counter = _highest_take_number(PENDING_DIR)
+        takes.prune_old(PENDING_DIR, self._config.prune_takes_after_days)
+        self._take_counter = takes.highest_number(PENDING_DIR)
         self._start_watching_focus()
         self._hotkey.start()
         logger.info("ready — press %s to dictate", self._config.hotkey)
@@ -443,7 +444,7 @@ class App:
         """
         with self._jobs:
             self._take_counter += 1
-            path = PENDING_DIR / f"take-{self._take_counter:04d}.wav"
+            path = takes.path_for(PENDING_DIR, self._take_counter)
             self._claimed.add(path)
             self._pending_jobs += 1
         self._start_worker(recording, path)
@@ -464,7 +465,7 @@ class App:
         """
         with self._jobs:
             try:
-                found = sorted(PENDING_DIR.glob(PENDING_PATTERN))
+                found = takes.orphans(PENDING_DIR)
             except OSError:
                 return None
             orphans = [p for p in found if p not in self._claimed]
@@ -482,29 +483,13 @@ class App:
             self._claimed.discard(path)
             self._jobs.notify_all()
 
-    def _prune_old_takes(self) -> None:
-        """Delete recordings older than the configured age, so they do not pile up."""
-        cutoff = time.time() - self._config.prune_takes_after_days * SECONDS_PER_DAY
-        try:
-            stale = [p for p in PENDING_DIR.glob(PENDING_PATTERN) if p.stat().st_mtime < cutoff]
-        except OSError:
-            return
-        for path in stale:
-            try:
-                path.unlink(missing_ok=True)
-                logger.info(
-                    "removed a recording older than %d days", self._config.prune_takes_after_days
-                )
-            except OSError as exc:
-                logger.warning("could not remove an old recording: %s", exc)
-
     # ------------------------------------------------------------------- transcription
 
     def _transcribe_and_paste(self, recording: Recording, path: Path) -> None:
         """Runs on a worker thread so the keyboard listener is never blocked."""
         succeeded = False
         try:
-            self._keep_for_retry(recording.wav_bytes, path)
+            takes.keep_for_retry(recording.wav_bytes, path)
             with self._transcribing:
                 # Recompute the state here rather than at spawn time: a job queued behind
                 # another only becomes the one the icon is describing once it starts.
@@ -539,7 +524,7 @@ class App:
         if not self._paste(self._compose(transcript.text)):
             return False
 
-        self._discard(path)
+        takes.discard(path)
         return True
 
     def _compose(self, text: str) -> str:
@@ -607,37 +592,13 @@ class App:
             self._report_error(str(exc), f"ტექსტი clipboard-შია — დააჭირე {PASTE_SHORTCUT_LABEL}")
             return False
         except ClipboardUnavailableError as exc:
-            self._save_transcript(text)
+            takes.save_transcript(text, LOGS_DIR, LAST_TRANSCRIPT_PATH)
             self._report_error(str(exc), "ჩასმა ვერ მოხერხდა — ტექსტი logs საქაღალდეშია")
             return False
 
         return True
 
     # ------------------------------------------------------------------------- salvage
-
-    def _keep_for_retry(self, wav_bytes: bytes, path: Path) -> None:
-        """Written before the upload, so anything that kills the worker leaves the words."""
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(wav_bytes)
-        except OSError as exc:
-            logger.warning("could not keep the recording for retry: %s", exc)
-
-    def _discard(self, path: Path) -> None:
-        """This take's words made it into a window — its copy on disk is no longer needed."""
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("could not remove the kept recording: %s", exc)
-
-    def _save_transcript(self, text: str) -> None:
-        """Last resort when the clipboard itself is unusable and Ctrl+V would find nothing."""
-        try:
-            LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            LAST_TRANSCRIPT_PATH.write_text(text, encoding="utf-8")
-            logger.info("clipboard unusable — wrote the text to %s", LAST_TRANSCRIPT_PATH)
-        except OSError as exc:
-            logger.error("could not save the transcript anywhere: %s", exc)
 
     # -------------------------------------------------------------------- tray actions
 
@@ -753,13 +714,3 @@ def _describe_input_device(device: int | str | None) -> str:
     # shortcut hint on the other side of the footer.
     name = name.strip().split("(")[0].strip()
     return f"მიკროფონი: {name[:16].rstrip()}" if name else "მიკროფონი"
-
-
-def _highest_take_number(directory: Path) -> int:
-    """Continue numbering above whatever a previous session left behind."""
-    try:
-        names = [p.name for p in directory.glob(PENDING_PATTERN)]
-    except OSError:
-        return 0
-    numbers = [int(m.group(1)) for name in names if (m := PENDING_NUMBER.search(name))]
-    return max(numbers, default=0)
