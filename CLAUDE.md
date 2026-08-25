@@ -153,13 +153,15 @@ Detailed rules: [.claude/rules/testing.md](.claude/rules/testing.md)
 ## Code Quality
 
 - Functions under 50 lines, files under 400 lines, nesting depth 4 or less
-- **Known debt, and the two files that keep it.** `app.py` is about 715 lines and
-  `overlay.py` about 465, both against that 400-line limit. Neither is an oversight —
-  `docs/decisions/011-*.md` records why each stays and what was tried. `app.py` is the
-  state machine, which has one owner by rule; `overlay.py` is the window itself. Do not
-  add to either without splitting something out, and do not "fix" the number by moving
-  code into a mixin the same class inherits: that was considered and refused, because it
-  changes no coupling and makes nothing newly testable.
+- **Known debt — three files.** `app.py` is about 715 lines, `config.py` 510 and
+  `overlay.py` 465, all against that 400-line limit. The first and third are not an
+  oversight: `docs/decisions/011-*.md` records why each stays and what was tried —
+  `app.py` is the state machine, which has one owner by rule, and `overlay.py` is the
+  window itself. **`config.py` has never been examined and is the obvious next seam:**
+  it holds reading, validating, and writing the key file, which are three jobs. Do not
+  add to any of the three without splitting something out, and do not "fix" the number by
+  moving code into a mixin the same class inherits: that was considered and refused,
+  because it changes no coupling and makes nothing newly testable.
 - **The card is six files now** — `overlay.py` owns the root, the canvas, the pointer and
   the refresh loop and **makes no drawing call at all**; `card_painter.py` and
   `card_buttons.py` draw; `card_layout.py` holds the measurements, the colours and the
