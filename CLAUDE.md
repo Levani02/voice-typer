@@ -153,12 +153,22 @@ Detailed rules: [.claude/rules/testing.md](.claude/rules/testing.md)
 ## Code Quality
 
 - Functions under 50 lines, files under 400 lines, nesting depth 4 or less
-- **Known debt:** `voice_typer/overlay.py` is about 1100 lines against that 400-line
-  limit, and `app.py` is over 700. Do not add to either without splitting something out —
-  `card_glyphs.py` is what the card's notice line paid with. The two seams still
-  available in `overlay.py` are the right-click menu and the window-position
-  persistence; the second is the more valuable, because it would make five behaviours
-  testable without a desktop session.
+- **Known debt, and the two files that keep it.** `app.py` is about 715 lines and
+  `overlay.py` about 465, both against that 400-line limit. Neither is an oversight —
+  `docs/decisions/011-*.md` records why each stays and what was tried. `app.py` is the
+  state machine, which has one owner by rule; `overlay.py` is the window itself. Do not
+  add to either without splitting something out, and do not "fix" the number by moving
+  code into a mixin the same class inherits: that was considered and refused, because it
+  changes no coupling and makes nothing newly testable.
+- **The card is six files now** — `overlay.py` owns the root, the canvas, the pointer and
+  the refresh loop and **makes no drawing call at all**; `card_painter.py` and
+  `card_buttons.py` draw; `card_layout.py` holds the measurements, the colours and the
+  `Card` record; `card_menu.py` the right-click menu; `window_state.py` where the card was
+  left. Every id the canvas hands out lives in one `Card`, replaced whole whenever the
+  canvas is cleared — a stale id is a silent no-op in Tk, so resetting fields by hand is
+  how the card ends up frozen with nothing in the log.
+- **`tests/unit/test_overlay.py` is over the limit and stays that way.** Tk allows one
+  root per process; splitting the file would need several, which fails outright.
 - Every audio stream and every clipboard change is cleaned up on the error path too
 - Zero hardcoded settings — hotkey, timings, device, model names, thresholds and the cost
   rate all live in `config.json`, validated at startup, unknown keys rejected

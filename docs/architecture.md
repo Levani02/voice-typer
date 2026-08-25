@@ -6,30 +6,65 @@ One background process. It watches for a key, records while the key is engaged, 
 audio to ElevenLabs, and pastes the returned text into whatever window has focus.
 
 ```
-hotkey listener  →  recorder  →  ElevenLabs Scribe v2  →  text injector
-      ↑                                                        │
-      └────────────────  tray icon shows state  ───────────────┘
+hotkey / card  →  recorder  →  ElevenLabs Scribe v2  →  [rewrite mode: Gemini]  →  injector
+      ↑                                                                              │
+      └──────────────  the card, and the tray icon, show the state  ─────────────────┘
 ```
+
+In **words** mode nothing stands between Scribe and the cursor. In **rewrite** mode the
+transcript — text, never audio — goes to Gemini and comes back condensed. See
+[decisions/008](decisions/008-two-modes-and-no-second-vendor.md) and
+[decisions/009](decisions/009-gemini-for-the-rewrite-mode.md).
 
 ## Modules
 
 | File | Responsibility |
 | --- | --- |
 | `main.py` | entry point — builds the pieces, wires them together, handles shutdown |
-| `voice_typer/config.py` | reads `.env` and `config.json`, validates both, fails fast |
+| `voice_typer/app.py` | the state machine that connects everything else |
+| `voice_typer/config.py` | reads the key file and `config.json`, validates both, fails fast |
 | `voice_typer/recorder.py` | microphone capture into a 16 kHz mono WAV held in memory |
 | `voice_typer/hotkey.py` | global key listener; tells hold apart from tap |
 | `voice_typer/transcriber.py` | ElevenLabs Scribe v2 client, one retry, usage accounting |
-| `voice_typer/injector.py` | clipboard save → set → `Ctrl+V` → restore |
+| `voice_typer/rewrite.py` | Gemini, in the rewrite mode only; never raises for an ordinary failure |
+| `voice_typer/fillers.py` | removes hesitation sounds from a transcript |
+| `voice_typer/takes.py` | the recordings kept on disk between speaking and seeing the words |
+| `voice_typer/injector.py` | clipboard save → set → paste → restore |
 | `voice_typer/focus.py` | remembers the window the user was typing in, and gives it back |
-| `voice_typer/overlay.py` | the recorder window — the app's visible surface |
-| `voice_typer/widget_theme.py` | colours, and the drawing Tk cannot do by itself |
-| `voice_typer/tray.py` | tray icon, kept as a fallback for the window |
 | `voice_typer/single_instance.py` | refuses to start a second copy |
-| `voice_typer/app.py` | the state machine that connects everything above |
+| `voice_typer/tray.py` | tray icon, kept as a fallback for the card |
+| `voice_typer/first_run.py` | asks for the two API keys, and offers a desktop shortcut |
+| `voice_typer/desktop_shortcut.py` | writes the shortcut, per platform |
 
-`app.py` is the only module aware of more than one other module. Every other file can be
-tested, or reasoned about, on its own.
+### The card
+
+The recorder window is six files, because one was 1115 lines against a 400-line limit.
+The split is described in [decisions/011](decisions/011-splitting-the-card.md).
+
+| File | Responsibility |
+| --- | --- |
+| `voice_typer/overlay.py` | the window itself: root, canvas, pointer, folding, refresh loop. **Makes no drawing call at all.** |
+| `voice_typer/card_painter.py` | draws the card's shell, status row, meter and footer; hands back a record of everything it made |
+| `voice_typer/card_buttons.py` | draws the controls and switches them between lit, hovered and greyed out |
+| `voice_typer/card_layout.py` | measurements, colours and the `Card` record. No tkinter — testable without a screen |
+| `voice_typer/card_menu.py` | the right-click menu: building it, relabelling it, showing it |
+| `voice_typer/card_glyphs.py` | four pure glyph-drawing functions |
+| `voice_typer/widget_theme.py` | colours, colour arithmetic, and the canvas drawing Tk lacks |
+| `voice_typer/window_state.py` | where the card was left, and whether that place still exists |
+
+### Per-platform
+
+| File | Responsibility |
+| --- | --- |
+| `voice_typer/platform_support.py` | same shape on both systems, different implementation |
+| `voice_typer/window_platform.py` | the three things Tk cannot express: never taking focus, real transparency, the true desktop extent |
+| `voice_typer/tcl_paths.py` | points Tcl at the base Python install, so Tk can start from inside a venv on Windows |
+
+`app.py` is the module that knows the most about the others — it imports ten, and it is
+the only one that owns the state machine. `main.py` imports seven, and `overlay.py` eight;
+everything below those three imports at most four, and nine modules import nothing local
+at all. There are no import cycles: two edges (`config` → `hotkey`, `card_menu` →
+`first_run`) are deferred to function scope on purpose.
 
 ## The state machine
 
@@ -39,8 +74,10 @@ IDLE ──key down──▶ RECORDING ──stop──▶ TRANSCRIBING ──te
                        └──Esc: discard──▶ IDLE└──failure──▶ ERROR ──▶ IDLE
 ```
 
-`ERROR` is a display state, not a dead end — the tray icon turns dark red, the reason goes
-to the log, and the machine returns to `IDLE` ready for the next press.
+`ERROR` is a display state, not a dead end — the card and the tray icon both turn red, the
+reason goes to the log, and the machine returns to `IDLE` ready for the next press. There
+is also `PAUSED`, reachable from `RECORDING` and back, and `disabled` when the hotkey has
+been switched off from the menu.
 
 ## The one key, two behaviours
 
@@ -158,9 +195,12 @@ Three constraints learned the hard way, all now covered by tests:
 | `logs/voice_typer.log` | rotating log, 1 MB × 3. No API key. No transcript unless `LOG_TRANSCRIPTS=true` |
 | `logs/pending/take-NNNN.wav` | one file per take, written before its upload and deleted once its text lands |
 | `logs/last_transcript.txt` | only written when the clipboard is unusable, so the words are not lost |
-| `logs/usage.json` | cumulative seconds and estimated cost, shown in the tray menu |
+| `logs/usage.json` | cumulative seconds and estimated cost, shown in the card's menu |
+| `logs/window.json` | where the card was left, folded or open, and which mode |
 
-All of them are excluded from git.
+All of them are excluded from git. On Windows they sit beside the executable; on macOS
+under `~/Library/Application Support/voice-typer`, because a `.app` bundle is meant to be
+read-only. `config.py` decides which, and the key file and `rewrite-prompt.md` follow.
 
 ## Losing nothing
 
@@ -202,8 +242,9 @@ They need opposite advice, so they are separate exception types:
 
 ## External dependencies
 
-One outbound host: `api.elevenlabs.io`. No listening port, no incoming connections, no
-elevated privileges.
+Two outbound hosts. `api.elevenlabs.io` receives the audio, on every take. Gemini receives
+the **transcript, never the audio**, and only in the rewrite mode — in words mode nothing
+is sent to it at all. No listening port, no incoming connections, no elevated privileges.
 
 ## Known limits
 
