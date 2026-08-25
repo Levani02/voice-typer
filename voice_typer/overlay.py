@@ -62,7 +62,12 @@ _point_tcl_at_the_base_installation()
 
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
-from voice_typer import card_glyphs, card_menu, window_platform, window_state  # noqa: E402
+from voice_typer import (  # noqa: E402
+    card_buttons,
+    card_menu,
+    window_platform,
+    window_state,
+)
 from voice_typer import card_layout as layout  # noqa: E402
 from voice_typer import widget_theme as theme  # noqa: E402
 from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
@@ -211,7 +216,7 @@ class OverlayWindow:
 
         self._paint_status_row()
         self._paint_meter()
-        self._paint_buttons()
+        card_buttons.paint_row(self._canvas, self._m, self._card, self._button_actions())
         self._paint_footer()
 
     def _paint_collapsed_card(self) -> None:
@@ -240,7 +245,14 @@ class OverlayWindow:
             self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
         )
         toggle = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
-        self._paint_fold_button(toggle, pointing_up=True)
+        card_buttons.paint_fold(
+            self._canvas,
+            self._m,
+            self._card,
+            toggle,
+            pointing_up=True,
+            command=self.toggle_collapsed,
+        )
 
         edge = toggle[0] - self._m.s(10)
         if self._rewrite_mode:
@@ -252,7 +264,14 @@ class OverlayWindow:
                 edge,
                 y + self._m.c(9),
             )
-            self._paint_mode_button(pill)
+            card_buttons.paint_mode(
+                self._canvas,
+                self._m,
+                self._card,
+                pill,
+                rewrite=self._rewrite_mode,
+                command=self.toggle_rewrite_mode,
+            )
             edge = pill[0] - self._m.s(8)
 
         self._card.timer_text = self._canvas.create_text(
@@ -263,11 +282,6 @@ class OverlayWindow:
             fill=theme.ACCENT,
             font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
         )
-
-    def _inner_edges(self, bleed: int = 0) -> tuple[int, int]:
-        left = self._m.s(layout.CARD_MARGIN + layout.PAD - bleed)
-        right = self._m.s(layout.WINDOW_WIDTH - layout.CARD_MARGIN - layout.PAD + bleed)
-        return left, right
 
     def _paint_status_row(self) -> None:
         left, right = self._m.inner_edges()
@@ -288,7 +302,14 @@ class OverlayWindow:
         # The fold control sits in the corner rather than in the button row: that row is
         # for what to do with a recording, and folding the window is not one of those.
         fold = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
-        self._paint_fold_button(fold, pointing_up=False)
+        card_buttons.paint_fold(
+            self._canvas,
+            self._m,
+            self._card,
+            fold,
+            pointing_up=False,
+            command=self.toggle_collapsed,
+        )
 
         # The badge is sized with the lettering inside it rather than with the card, or
         # a larger "F9" would push against its own border.
@@ -315,68 +336,6 @@ class OverlayWindow:
             font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
         )
 
-    def _paint_mode_button(self, box: tuple[int, int, int, int]) -> None:
-        """Which of the two things F9 does, shown as a word and switched by clicking it.
-
-        Both shapes of the card paint this the same way, so there is exactly one place
-        where the mode is drawn and exactly one where it is read.
-        """
-        box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
-        rewrite = self._rewrite_mode
-        button = layout.Button(
-            box,
-            self.toggle_rewrite_mode,
-            theme.BUTTON_TOP,
-            theme.BUTTON_BOTTOM,
-            theme.BUTTON_TOP_HOVER,
-            theme.BUTTON_BOTTOM_HOVER,
-        )
-        radius = self._m.s(7)
-        button.fill_items = theme.rounded_gradient(
-            self._canvas, box, radius, button.top, button.bottom
-        )
-        theme.rounded_outline(
-            self._canvas, box, radius, layout.ORANGE if rewrite else theme.BUTTON_BORDER
-        )
-        self._card.buttons["mode"] = button
-
-        self._canvas.create_text(
-            (box[0] + box[2]) / 2,
-            (box[1] + box[3]) / 2,
-            text="გამართვა" if rewrite else "სიტყვები",
-            fill=layout.ORANGE if rewrite else theme.TEXT_MUTED,
-            font=self._m.font(theme.UI_FAMILY, theme.FOOTER_PX + 1),
-        )
-
-    def _paint_fold_button(self, box: tuple[int, int, int, int], *, pointing_up: bool) -> None:
-        """The one control both shapes of the card have: fold away, or open back up."""
-        box = tuple(round(edge) for edge in box)  # type: ignore[assignment]
-        button = layout.Button(
-            box,
-            self.toggle_collapsed,
-            theme.BUTTON_TOP,
-            theme.BUTTON_BOTTOM,
-            theme.BUTTON_TOP_HOVER,
-            theme.BUTTON_BOTTOM_HOVER,
-        )
-        radius = self._m.s(6)
-        button.fill_items = theme.rounded_gradient(
-            self._canvas, box, radius, button.top, button.bottom
-        )
-        theme.rounded_outline(self._canvas, box, radius, theme.BUTTON_BORDER)
-        self._card.buttons["fold"] = button
-
-        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        arm = self._m.c(3.8)
-        rise = self._m.c(2.2)
-        stroke = max(1, self._m.c(1.5))
-        tip_y = y - rise if pointing_up else y + rise
-        base_y = y + rise if pointing_up else y - rise
-        for side in (-arm, arm):
-            self._canvas.create_line(
-                x + side, base_y, x, tip_y, fill=theme.TEXT_MUTED, width=stroke
-            )
-
     def _paint_meter(self) -> None:
         left, right = self._m.inner_edges(bleed=4)
         middle = self._m.s(layout.METER_MIDDLE)
@@ -399,124 +358,6 @@ class OverlayWindow:
                     width=0,
                 )
             )
-
-    def _paint_buttons(self) -> None:
-        left, right = self._m.inner_edges(bleed=4)
-        top, bottom = self._m.s(layout.BUTTON_TOP), self._m.s(layout.BUTTON_BOTTOM)
-        square = bottom - top
-        gap = self._m.s(8)
-
-        flexible = right - left - gap * 3 - square * 2
-        record_width = round(flexible * 1.15 / 2.15)
-
-        record_box = (left, top, left + record_width, bottom)
-        pause_box = (record_box[2] + gap, top, right - square * 2 - gap * 2, bottom)
-        cancel_box = (pause_box[2] + gap, top, pause_box[2] + gap + square, bottom)
-        power_box = (right - square, top, right, bottom)
-
-        plain = (
-            theme.BUTTON_TOP,
-            theme.BUTTON_BOTTOM,
-            theme.BUTTON_TOP_HOVER,
-            theme.BUTTON_BOTTOM_HOVER,
-        )
-        self._card.buttons["record"] = layout.Button(
-            record_box, self._controller.toggle_recording, *plain
-        )
-        self._card.buttons["pause"] = layout.Button(
-            pause_box, self._controller.toggle_pause, *plain
-        )
-        self._card.buttons["cancel"] = layout.Button(
-            cancel_box,
-            self._controller.cancel_recording,
-            theme.CANCEL_TOP,
-            theme.CANCEL_BOTTOM,
-            "#3d3327",
-            "#1d1916",
-        )
-        self._card.buttons["power"] = layout.Button(
-            power_box,
-            self._controller.quit,
-            theme.POWER_TOP,
-            theme.POWER_BOTTOM,
-            "#3d2a2c",
-            "#1d1718",
-        )
-
-        radius = self._m.s(layout.BUTTON_RADIUS)
-        borders = {"cancel": theme.CANCEL_BORDER, "power": theme.POWER_BORDER}
-        # Only the four painted here. The fold control is already drawn, with its own
-        # size and its own chevron, and painting it a second time would bury the chevron.
-        for name in ("record", "pause", "cancel", "power"):
-            button = self._card.buttons[name]
-            button.fill_items = theme.rounded_gradient(
-                self._canvas, button.box, radius, button.top, button.bottom
-            )
-            theme.rounded_outline(
-                self._canvas, button.box, radius, borders.get(name, theme.BUTTON_BORDER)
-            )
-
-        self._paint_record_face(record_box)
-        self._paint_pause_face(pause_box)
-        self._paint_cross(cancel_box, theme.CANCEL_INK)
-        self._paint_power(power_box, theme.POWER_INK)
-
-    def _paint_record_face(self, box: tuple[int, int, int, int]) -> None:
-        centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._m.s(30)
-        self._card.record_icon = card_glyphs.draw_microphone(
-            self._canvas, icon_x, centre_y, theme.ACCENT, self._m.c
-        )
-        self._card.record_label = self._canvas.create_text(
-            icon_x + self._m.c(15),
-            centre_y,
-            text="ჩაწერა",
-            anchor="w",
-            fill=theme.TEXT_BRIGHT,
-            font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
-        )
-        self._centre_in(box, [*self._card.record_icon, self._card.record_label])
-
-    def _centre_in(self, box: tuple[int, int, int, int], items: list[int]) -> None:
-        """Slide a button's icon and label so the pair sits centred in it.
-
-        Measured rather than computed: the label's width depends on the font Windows
-        picked for Georgian, and it changes when the label does. Doing this after every
-        text change is also what stops the group jumping sideways between states.
-        """
-        bounds = self._canvas.bbox(*items)
-        if bounds is None:
-            return
-        wanted = (box[0] + box[2]) / 2
-        current = (bounds[0] + bounds[2]) / 2
-        shift = round(wanted - current)
-        if shift:
-            for item in items:
-                self._canvas.move(item, shift, 0)
-
-    def _paint_pause_face(self, box: tuple[int, int, int, int]) -> None:
-        centre_y = (box[1] + box[3]) / 2
-        icon_x = box[0] + self._m.s(30)
-        self._card.pause_bars = card_glyphs.draw_pause_bars(
-            self._canvas, icon_x, centre_y, theme.TEXT_MUTED, self._m.c
-        )
-        self._card.pause_label = self._canvas.create_text(
-            icon_x + self._m.c(15),
-            centre_y,
-            text="პაუზა",
-            anchor="w",
-            fill=theme.TEXT_BRIGHT,
-            font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
-        )
-        self._centre_in(box, [*self._card.pause_bars, self._card.pause_label])
-
-    def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
-        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        self._card.cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._m.c)
-
-    def _paint_power(self, box: tuple[int, int, int, int], colour: str) -> None:
-        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._m.s(0.5)
-        card_glyphs.draw_power(self._canvas, x, y, colour, self._m.c)
 
     def _fit_text(self, item: int, text: str, room: int) -> None:
         """Put text on an item, trimmed with an ellipsis until it fits.
@@ -549,7 +390,14 @@ class OverlayWindow:
             left + self._m.s(layout.MODE_PILL_WIDTH),
             y + self._m.s(layout.MODE_PILL_HEIGHT / 2),
         )
-        self._paint_mode_button(pill)
+        card_buttons.paint_mode(
+            self._canvas,
+            self._m,
+            self._card,
+            pill,
+            rewrite=self._rewrite_mode,
+            command=self.toggle_rewrite_mode,
+        )
         # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
         # for those runs and a longer line collides with the mode pill on the left.
         self._card.shown_notice = ""  # so a re-fit only happens when the message changes
@@ -638,14 +486,8 @@ class OverlayWindow:
         self._canvas.bind("<Leave>", lambda _e: self._set_hover(None))
         self._canvas.bind("<Button-3>", self._show_menu)
 
-    def _button_at(self, x: int, y: int) -> str | None:
-        for name, button in self._card.buttons.items():
-            if button.enabled and button.contains(x, y):
-                return name
-        return None
-
     def _on_press(self, event: tk.Event) -> None:
-        self._pressed = self._button_at(event.x, event.y)
+        self._pressed = card_buttons.at(self._card, event.x, event.y)
         if self._pressed is None:
             self._drag_origin = (
                 event.x_root - self._root.winfo_x(),
@@ -665,24 +507,26 @@ class OverlayWindow:
             self._save_position()
             return
 
-        name = self._button_at(event.x, event.y)
+        name = card_buttons.at(self._card, event.x, event.y)
         pressed, self._pressed = self._pressed, None
         if name is not None and name == pressed:
             self._safely(self._card.buttons[name].command)
 
     def _on_move(self, event: tk.Event) -> None:
-        self._set_hover(self._button_at(event.x, event.y))
+        self._set_hover(card_buttons.at(self._card, event.x, event.y))
 
     def _set_hover(self, name: str | None) -> None:
-        for key, button in self._card.buttons.items():
-            wanted = key == name
-            if wanted == button.hovered:
-                continue
-            button.hovered = wanted
-            top = button.top_hover if wanted else button.top
-            bottom = button.bottom_hover if wanted else button.bottom
-            theme.recolour_gradient(self._canvas, button.fill_items, top, bottom)
-        self._canvas.config(cursor="hand2" if name else "")
+        card_buttons.set_hover(self._canvas, self._card, name)
+
+    def _button_actions(self) -> card_buttons.Actions:
+        """The four commands the drawn buttons carry. The window is the only object that
+        holds both the app and the canvas, so it is where the two are introduced."""
+        return card_buttons.Actions(
+            toggle_recording=self._controller.toggle_recording,
+            toggle_pause=self._controller.toggle_pause,
+            cancel_recording=self._controller.cancel_recording,
+            quit=self._controller.quit,
+        )
 
     def _safely(self, command: Callable[[], None]) -> None:
         """A button must never be able to take the window down with it."""
@@ -824,7 +668,7 @@ class OverlayWindow:
             self._card.shown_notice = notice
 
         self._update_meter(state, look.wave)
-        self._update_buttons(state, look)
+        card_buttons.update(self._canvas, self._m, self._card, state, look)
 
     def _update_meter(self, state: str, colour: str) -> None:
         """Scroll the level history leftwards, newest at the right — a recorder's trace."""
@@ -850,63 +694,6 @@ class OverlayWindow:
             x0, _, x1, _ = self._canvas.coords(bar)
             self._canvas.coords(bar, x0, middle - height / 2, x1, middle + height / 2)
             self._canvas.itemconfig(bar, fill=colour if height > floor else faded)
-
-    def _update_buttons(self, state: str, look: layout.Look) -> None:
-        busy = state in ("recording", "paused")
-
-        self._set_enabled("record", state not in ("transcribing", "disabled"))
-        self._set_enabled("pause", busy)
-        self._set_enabled("cancel", busy)
-
-        self._set_label(self._card.record_label, "გაჩერება" if busy else "ჩაწერა", "record")
-        self._set_label(
-            self._card.pause_label, "გაგრძელება" if state == "paused" else "პაუზა", "pause"
-        )
-
-        # A bright cyan microphone beside a greyed-out label reads as a live button.
-        ink = look.mic if self._card.buttons["record"].enabled else theme.DISABLED_INK
-        for index, item in enumerate(self._card.record_icon):
-            # The oval and the arc take `outline`; the stem is a line and takes `fill`.
-            option = "outline" if index < 2 else "fill"
-            self._canvas.itemconfig(item, **{option: ink})
-
-    def _set_label(self, item: int, text: str, button: str) -> None:
-        """Change a button's caption and re-centre its contents around the new width."""
-        if self._canvas.itemcget(item, "text") == text:
-            return
-        self._canvas.itemconfig(item, text=text)
-        group = self._card.record_icon if button == "record" else self._card.pause_bars
-        self._centre_in(self._card.buttons[button].box, [*group, item])
-
-    def _set_enabled(self, name: str, enabled: bool) -> None:
-        button = self._card.buttons[name]
-        if button.enabled == enabled:
-            return
-        button.enabled = enabled
-
-        if not enabled and button.hovered:
-            # Otherwise a button that switches off under the pointer keeps its lit
-            # gradient and its hand cursor, and the next click there drags the window.
-            button.hovered = False
-            theme.recolour_gradient(self._canvas, button.fill_items, button.top, button.bottom)
-            self._canvas.config(cursor="")
-
-        if name == "record":
-            self._canvas.itemconfig(
-                self._card.record_label, fill=theme.TEXT_BRIGHT if enabled else theme.DISABLED_INK
-            )
-        elif name == "pause":
-            ink = theme.TEXT_BRIGHT if enabled else theme.DISABLED_INK
-            self._canvas.itemconfig(self._card.pause_label, fill=ink)
-            for bar in self._card.pause_bars:
-                self._canvas.itemconfig(
-                    bar, fill=theme.TEXT_MUTED if enabled else theme.DISABLED_INK
-                )
-        elif name == "cancel":
-            for item in self._card.cancel_ink:
-                self._canvas.itemconfig(
-                    item, fill=theme.CANCEL_INK if enabled else theme.DISABLED_INK
-                )
 
     # ------------------------------------------------------------------------ lifecycle
 
