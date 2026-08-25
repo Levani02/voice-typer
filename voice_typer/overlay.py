@@ -62,7 +62,7 @@ _point_tcl_at_the_base_installation()
 
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
-from voice_typer import card_glyphs, window_platform, window_state  # noqa: E402
+from voice_typer import card_glyphs, card_menu, window_platform, window_state  # noqa: E402
 from voice_typer import card_layout as layout  # noqa: E402
 from voice_typer import widget_theme as theme  # noqa: E402
 from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
@@ -696,108 +696,43 @@ class OverlayWindow:
     # ---------------------------------------------------------------------------- menu
 
     def _build_menu(self) -> None:
-        """Right-click menu — everything the hidden tray icon used to offer."""
-        self._menu = tk.Menu(
+        """Assemble what the menu may ask for: some of it is the app's, some is ours.
+
+        Every command goes through `_safely`, so a menu entry that raises leaves the
+        window standing — the same guarantee the drawn buttons have.
+        """
+        self._menu, self._menu_index = card_menu.build(
             self._root,
-            tearoff=0,
-            bg="#26292c",
-            fg=theme.TEXT_BRIGHT,
-            activebackground="#3a3e43",
-            activeforeground=theme.TEXT_BRIGHT,
-            borderwidth=0,
-        )
-        # Every entry whose label changes is remembered by name as it is added. Counting
-        # positions by hand is how a menu ends up relabelling the wrong line the next time
-        # somebody inserts an item above it.
-        self._menu_index: dict[str, int] = {}
-        self._add_menu_entry("usage", label="", state="disabled")  # filled in on open
-        self._menu.add_separator()
-        self._add_menu_entry(
-            "listening",
-            label="F9-ის მოსმენა",
-            command=lambda: self._safely(self._controller.toggle_enabled),
-        )
-        self._menu.add_command(
-            label="ბოლო ჩანაწერის ხელახლა გაგზავნა",
-            command=lambda: self._safely(self._controller.retry_last),
-        )
-        self._menu.add_command(
-            label="ნედლი ტექსტი clipboard-ში",
-            command=lambda: self._safely(self._controller.copy_raw_text),
-        )
-        self._add_menu_entry(
-            "mode",
-            label="გამართვის რეჟიმი",
-            command=lambda: self._safely(self.toggle_rewrite_mode),
-        )
-        self._add_menu_entry(
-            "fold", label="ჩაკეცვა", command=lambda: self._safely(self.toggle_collapsed)
-        )
-        self._menu.add_separator()
-        self._menu.add_command(
-            label="ლოგების საქაღალდე", command=lambda: self._safely(self._controller.open_logs)
-        )
-        self._menu.add_command(
-            label="პარამეტრები (config.json)",
-            command=lambda: self._safely(self._controller.open_settings),
-        )
-        self._menu.add_command(
-            label="გამართვის ინსტრუქცია (rewrite-prompt.md)",
-            command=lambda: self._safely(self._controller.open_rewrite_prompt),
-        )
-        self._menu.add_command(
-            label="API გასაღებები…", command=lambda: self._safely(self._open_keys)
-        )
-        self._menu.add_separator()
-        self._menu.add_command(
-            label="გამორთვა", command=lambda: self._safely(self._controller.quit)
+            card_menu.Actions(
+                toggle_enabled=lambda: self._safely(self._controller.toggle_enabled),
+                retry_last=lambda: self._safely(self._controller.retry_last),
+                copy_raw_text=lambda: self._safely(self._controller.copy_raw_text),
+                toggle_rewrite_mode=lambda: self._safely(self.toggle_rewrite_mode),
+                toggle_collapsed=lambda: self._safely(self.toggle_collapsed),
+                open_logs=lambda: self._safely(self._controller.open_logs),
+                open_settings=lambda: self._safely(self._controller.open_settings),
+                open_rewrite_prompt=lambda: self._safely(self._controller.open_rewrite_prompt),
+                open_keys=lambda: self._safely(self._open_keys),
+                quit_app=lambda: self._safely(self._controller.quit),
+            ),
         )
 
     def _open_keys(self) -> None:
-        """The keys window, as a child of this one.
-
-        Opened here rather than in `app.py` because Tk allows exactly one root and this
-        object owns it — a second `tk.Tk()` from the state machine would be a second
-        event loop and a hung window. The app is told afterwards, so a key typed in just
-        now takes effect on the next dictation rather than after a restart.
-
-        Imported inside the function: the window is a rare path and the module pulls in
-        the whole first-run screen, which nothing else here needs.
-        """
-        from voice_typer.first_run import ask_for_keys
-
-        if ask_for_keys(self._root):
-            self._controller.reload_keys()
-
-    def _add_menu_entry(self, name: str, **options) -> None:
-        """Add an entry and remember where it landed, for `_sync_menu` to find later."""
-        self._menu.add_command(**options)
-        self._menu_index[name] = self._menu.index("end")
+        card_menu.open_keys(self._root, self._controller.reload_keys)
 
     def _sync_menu(self) -> None:
-        """Bring the menu's live entries up to date. Kept apart from showing it because
-        `tk_popup` enters Windows' own modal loop and does not return until the menu is
-        dismissed — which nothing can do in a test."""
-        listening = self._controller.ui_state() != "disabled"
-        self._menu.entryconfig(self._menu_index["usage"], label=self._controller.usage_text())
-        self._menu.entryconfig(
-            self._menu_index["listening"],
-            label=("✓ F9-ის მოსმენა" if listening else "F9-ის მოსმენა"),
-        )
-        self._menu.entryconfig(
-            self._menu_index["mode"],
-            label=("✓ გამართვის რეჟიმი" if self._rewrite_mode else "გამართვის რეჟიმი"),
-        )
-        self._menu.entryconfig(
-            self._menu_index["fold"], label=("გაშლა" if self._collapsed else "ჩაკეცვა")
+        card_menu.sync(
+            self._menu,
+            self._menu_index,
+            usage=self._controller.usage_text(),
+            listening=self._controller.ui_state() != "disabled",
+            rewrite=self._rewrite_mode,
+            folded=self._collapsed,
         )
 
     def _show_menu(self, event: tk.Event) -> None:
         self._sync_menu()
-        try:
-            self._menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self._menu.grab_release()
+        card_menu.popup(self._menu, event.x_root, event.y_root)
 
     # ------------------------------------------------------------------------ position
 
