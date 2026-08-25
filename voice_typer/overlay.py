@@ -109,11 +109,9 @@ class OverlayWindow:
         self._drag_origin: tuple[int, int] | None = None
         self._pressed: str | None = None
         self._closing = False
-        self._buttons: dict[str, layout.Button] = {}
-        self._bars: list[int] = []
-        self._levels = [0.0] * layout.BAR_COUNT
-        self._meter_settled = False
-        self._meter_colour = ""
+        # Everything the canvas hands out lives in one record, replaced whole whenever
+        # the drawing is thrown away. See `card_layout.Card` for why that matters.
+        self._card = layout.Card()
         # The display's own scaling, then the user's preference on top of it. Both go
         # through the same multiplier, so a smaller window is drawn small rather than
         # drawn large and shrunk — which is what would make it soft again. Text and icons
@@ -238,7 +236,7 @@ class OverlayWindow:
         left = card[0] + self._m.s(layout.COLLAPSED_PAD)
         right = card[2] - self._m.s(layout.COLLAPSED_PAD)
 
-        self._dot_items = theme.glow_dot(
+        self._card.dot_items = theme.glow_dot(
             self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
         )
         toggle = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
@@ -257,7 +255,7 @@ class OverlayWindow:
             self._paint_mode_button(pill)
             edge = pill[0] - self._m.s(8)
 
-        self._timer_text = self._canvas.create_text(
+        self._card.timer_text = self._canvas.create_text(
             edge,
             y,
             text="0:00",
@@ -275,10 +273,10 @@ class OverlayWindow:
         left, right = self._m.inner_edges()
         y = self._m.s(layout.STATUS_BASELINE)
 
-        self._dot_items = theme.glow_dot(
+        self._card.dot_items = theme.glow_dot(
             self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
         )
-        self._status_text = self._canvas.create_text(
+        self._card.status_text = self._canvas.create_text(
             left + self._m.c(22),
             y,
             text="",
@@ -298,7 +296,7 @@ class OverlayWindow:
         badge = (badge_right - self._m.c(34), y - self._m.c(10), badge_right, y + self._m.c(10))
         theme.rounded_gradient(self._canvas, badge, self._m.c(5), "#26292c", "#1a1d20")
         theme.rounded_outline(self._canvas, badge, self._m.c(5), "#3a3e43")
-        self._badge_text = self._canvas.create_text(
+        self._card.badge_text = self._canvas.create_text(
             (badge[0] + badge[2]) / 2,
             y,
             text="F9",
@@ -308,7 +306,7 @@ class OverlayWindow:
 
         # Measured from the badge, not from the card's edge: the badge is what the timer
         # would collide with, and it is the thing whose width changes.
-        self._timer_text = self._canvas.create_text(
+        self._card.timer_text = self._canvas.create_text(
             badge[0] - self._m.s(12),
             y,
             text="0:00",
@@ -340,7 +338,7 @@ class OverlayWindow:
         theme.rounded_outline(
             self._canvas, box, radius, layout.ORANGE if rewrite else theme.BUTTON_BORDER
         )
-        self._buttons["mode"] = button
+        self._card.buttons["mode"] = button
 
         self._canvas.create_text(
             (box[0] + box[2]) / 2,
@@ -366,7 +364,7 @@ class OverlayWindow:
             self._canvas, box, radius, button.top, button.bottom
         )
         theme.rounded_outline(self._canvas, box, radius, theme.BUTTON_BORDER)
-        self._buttons["fold"] = button
+        self._card.buttons["fold"] = button
 
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         arm = self._m.c(3.8)
@@ -391,7 +389,7 @@ class OverlayWindow:
         span = (right - left - gap * (layout.BAR_COUNT - 1)) / layout.BAR_COUNT
         for index in range(layout.BAR_COUNT):
             x = left + index * (span + gap)
-            self._bars.append(
+            self._card.bars.append(
                 self._canvas.create_rectangle(
                     x,
                     middle - 0.5,
@@ -422,11 +420,13 @@ class OverlayWindow:
             theme.BUTTON_TOP_HOVER,
             theme.BUTTON_BOTTOM_HOVER,
         )
-        self._buttons["record"] = layout.Button(
+        self._card.buttons["record"] = layout.Button(
             record_box, self._controller.toggle_recording, *plain
         )
-        self._buttons["pause"] = layout.Button(pause_box, self._controller.toggle_pause, *plain)
-        self._buttons["cancel"] = layout.Button(
+        self._card.buttons["pause"] = layout.Button(
+            pause_box, self._controller.toggle_pause, *plain
+        )
+        self._card.buttons["cancel"] = layout.Button(
             cancel_box,
             self._controller.cancel_recording,
             theme.CANCEL_TOP,
@@ -434,7 +434,7 @@ class OverlayWindow:
             "#3d3327",
             "#1d1916",
         )
-        self._buttons["power"] = layout.Button(
+        self._card.buttons["power"] = layout.Button(
             power_box,
             self._controller.quit,
             theme.POWER_TOP,
@@ -448,7 +448,7 @@ class OverlayWindow:
         # Only the four painted here. The fold control is already drawn, with its own
         # size and its own chevron, and painting it a second time would bury the chevron.
         for name in ("record", "pause", "cancel", "power"):
-            button = self._buttons[name]
+            button = self._card.buttons[name]
             button.fill_items = theme.rounded_gradient(
                 self._canvas, button.box, radius, button.top, button.bottom
             )
@@ -464,10 +464,10 @@ class OverlayWindow:
     def _paint_record_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
         icon_x = box[0] + self._m.s(30)
-        self._record_icon = card_glyphs.draw_microphone(
+        self._card.record_icon = card_glyphs.draw_microphone(
             self._canvas, icon_x, centre_y, theme.ACCENT, self._m.c
         )
-        self._record_label = self._canvas.create_text(
+        self._card.record_label = self._canvas.create_text(
             icon_x + self._m.c(15),
             centre_y,
             text="ჩაწერა",
@@ -475,7 +475,7 @@ class OverlayWindow:
             fill=theme.TEXT_BRIGHT,
             font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
-        self._centre_in(box, [*self._record_icon, self._record_label])
+        self._centre_in(box, [*self._card.record_icon, self._card.record_label])
 
     def _centre_in(self, box: tuple[int, int, int, int], items: list[int]) -> None:
         """Slide a button's icon and label so the pair sits centred in it.
@@ -497,10 +497,10 @@ class OverlayWindow:
     def _paint_pause_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
         icon_x = box[0] + self._m.s(30)
-        self._pause_bars = card_glyphs.draw_pause_bars(
+        self._card.pause_bars = card_glyphs.draw_pause_bars(
             self._canvas, icon_x, centre_y, theme.TEXT_MUTED, self._m.c
         )
-        self._pause_label = self._canvas.create_text(
+        self._card.pause_label = self._canvas.create_text(
             icon_x + self._m.c(15),
             centre_y,
             text="პაუზა",
@@ -508,11 +508,11 @@ class OverlayWindow:
             fill=theme.TEXT_BRIGHT,
             font=self._m.font(theme.UI_FAMILY, theme.BUTTON_PX),
         )
-        self._centre_in(box, [*self._pause_bars, self._pause_label])
+        self._centre_in(box, [*self._card.pause_bars, self._card.pause_label])
 
     def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        self._cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._m.c)
+        self._card.cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._m.c)
 
     def _paint_power(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._m.s(0.5)
@@ -552,8 +552,8 @@ class OverlayWindow:
         self._paint_mode_button(pill)
         # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
         # for those runs and a longer line collides with the mode pill on the left.
-        self._shown_notice = ""  # so a re-fit only happens when the message changes
-        self._device_text = self._canvas.create_text(
+        self._card.shown_notice = ""  # so a re-fit only happens when the message changes
+        self._card.device_text = self._canvas.create_text(
             right, y, text="", anchor="e", fill=theme.TEXT_FAINT, font=font
         )
         # What the app had to say, in the space the microphone name usually occupies. It
@@ -561,7 +561,7 @@ class OverlayWindow:
         # message in while the next recording is already running, and hiding "იწერს" to
         # show it would make the card lie about what it is doing. In its own family, not
         # the footer's monospace: that font has no Georgian at all.
-        self._notice_text = self._canvas.create_text(
+        self._card.notice_text = self._canvas.create_text(
             left + self._m.s(layout.MODE_PILL_WIDTH) + self._m.s(layout.NOTICE_GAP),
             y,
             text="",
@@ -569,7 +569,7 @@ class OverlayWindow:
             fill=layout.AMBER,
             font=self._m.font(theme.UI_FAMILY, theme.FOOTER_PX),
         )
-        self._notice_room = (
+        self._card.notice_room = (
             right - self._m.s(layout.MODE_PILL_WIDTH) - self._m.s(layout.NOTICE_GAP) - left
         )
 
@@ -601,16 +601,14 @@ class OverlayWindow:
         """Throw the drawing away and paint the other shape at the same corner.
 
         Everything the canvas handed out — item ids, buttons, the meter's bars — belongs
-        to the drawing that is being deleted, so every one of them is reset here. A stale
-        id is not an error in Tk; it is a silent no-op, which is how a window ends up
-        looking frozen.
+        to the drawing that is being deleted. Clearing the canvas and replacing the record
+        happen in the same breath, so none of them can outlive the drawing: a stale id is
+        not an error in Tk, it is a silent no-op, which is how a window ends up looking
+        frozen. `_pressed` and `_drag_origin` are not drawing state — the canvas never
+        handed them out — so they are reset separately.
         """
         self._canvas.delete("all")
-        self._buttons = {}
-        self._bars = []
-        self._levels = [0.0] * layout.BAR_COUNT
-        self._meter_settled = False
-        self._meter_colour = ""
+        self._card = layout.Card()
         self._pressed = None
         self._drag_origin = None
 
@@ -641,7 +639,7 @@ class OverlayWindow:
         self._canvas.bind("<Button-3>", self._show_menu)
 
     def _button_at(self, x: int, y: int) -> str | None:
-        for name, button in self._buttons.items():
+        for name, button in self._card.buttons.items():
             if button.enabled and button.contains(x, y):
                 return name
         return None
@@ -670,13 +668,13 @@ class OverlayWindow:
         name = self._button_at(event.x, event.y)
         pressed, self._pressed = self._pressed, None
         if name is not None and name == pressed:
-            self._safely(self._buttons[name].command)
+            self._safely(self._card.buttons[name].command)
 
     def _on_move(self, event: tk.Event) -> None:
         self._set_hover(self._button_at(event.x, event.y))
 
     def _set_hover(self, name: str | None) -> None:
-        for key, button in self._buttons.items():
+        for key, button in self._card.buttons.items():
             wanted = key == name
             if wanted == button.hovered:
                 continue
@@ -801,9 +799,9 @@ class OverlayWindow:
         state = self._controller.ui_state()
         look = layout.APPEARANCE.get(state, layout.APPEARANCE["idle"])
 
-        theme.recolour_glow_dot(self._canvas, self._dot_items, look.dot, theme.CARD_TOP)
+        theme.recolour_glow_dot(self._canvas, self._card.dot_items, look.dot, theme.CARD_TOP)
         self._canvas.itemconfig(
-            self._timer_text,
+            self._card.timer_text,
             text=layout.format_elapsed(self._controller.ui_elapsed_seconds()),
             fill=look.timer,
         )
@@ -812,18 +810,18 @@ class OverlayWindow:
             # for one of them would raise on every tick, fourteen times a second.
             return
 
-        self._canvas.itemconfig(self._status_text, text=look.words)
-        self._canvas.itemconfig(self._badge_text, text=self._controller.ui_hotkey_label())
+        self._canvas.itemconfig(self._card.status_text, text=look.words)
+        self._canvas.itemconfig(self._card.badge_text, text=self._controller.ui_hotkey_label())
         # One line, two things to say. The message wins while it lasts: which microphone
         # is in use is the least urgent thing on the card, and the only reason someone
         # reads that line at all is to find out why something did not happen.
         notice = self._controller.ui_notice()
         self._canvas.itemconfig(
-            self._device_text, text="" if notice else self._controller.ui_device_label()
+            self._card.device_text, text="" if notice else self._controller.ui_device_label()
         )
-        if notice != self._shown_notice:
-            self._fit_text(self._notice_text, notice, self._notice_room)
-            self._shown_notice = notice
+        if notice != self._card.shown_notice:
+            self._fit_text(self._card.notice_text, notice, self._card.notice_room)
+            self._card.shown_notice = notice
 
         self._update_meter(state, look.wave)
         self._update_buttons(state, look)
@@ -832,23 +830,23 @@ class OverlayWindow:
         """Scroll the level history leftwards, newest at the right — a recorder's trace."""
         level = self._controller.ui_level() if state == "recording" else 0.0
         level = 0.0 if level != level else min(1.0, max(0.0, level))  # NaN reads as 0
-        self._levels = [*self._levels[1:], level]
+        self._card.levels = [*self._card.levels[1:], level]
 
         # Fourteen times a second, redrawing 58 rectangles that are all already flat is
         # most of what this window costs while it sits there doing nothing.
-        settled = not any(self._levels)
-        if settled and self._meter_settled and colour == self._meter_colour:
+        settled = not any(self._card.levels)
+        if settled and self._card.meter_settled and colour == self._card.meter_colour:
             return
-        self._meter_settled = settled
-        self._meter_colour = colour
+        self._card.meter_settled = settled
+        self._card.meter_colour = colour
 
         middle = self._m.s(layout.METER_MIDDLE)
         tallest = self._m.s(layout.METER_HEIGHT) - self._m.s(2)
         floor = self._m.s(layout.BAR_MIN_HEIGHT)
         faded = theme.blend(colour, theme.CARD_TOP, 0.45)
 
-        for index, bar in enumerate(self._bars):
-            height = max(floor, self._levels[index] * tallest)
+        for index, bar in enumerate(self._card.bars):
+            height = max(floor, self._card.levels[index] * tallest)
             x0, _, x1, _ = self._canvas.coords(bar)
             self._canvas.coords(bar, x0, middle - height / 2, x1, middle + height / 2)
             self._canvas.itemconfig(bar, fill=colour if height > floor else faded)
@@ -860,12 +858,14 @@ class OverlayWindow:
         self._set_enabled("pause", busy)
         self._set_enabled("cancel", busy)
 
-        self._set_label(self._record_label, "გაჩერება" if busy else "ჩაწერა", "record")
-        self._set_label(self._pause_label, "გაგრძელება" if state == "paused" else "პაუზა", "pause")
+        self._set_label(self._card.record_label, "გაჩერება" if busy else "ჩაწერა", "record")
+        self._set_label(
+            self._card.pause_label, "გაგრძელება" if state == "paused" else "პაუზა", "pause"
+        )
 
         # A bright cyan microphone beside a greyed-out label reads as a live button.
-        ink = look.mic if self._buttons["record"].enabled else theme.DISABLED_INK
-        for index, item in enumerate(self._record_icon):
+        ink = look.mic if self._card.buttons["record"].enabled else theme.DISABLED_INK
+        for index, item in enumerate(self._card.record_icon):
             # The oval and the arc take `outline`; the stem is a line and takes `fill`.
             option = "outline" if index < 2 else "fill"
             self._canvas.itemconfig(item, **{option: ink})
@@ -875,11 +875,11 @@ class OverlayWindow:
         if self._canvas.itemcget(item, "text") == text:
             return
         self._canvas.itemconfig(item, text=text)
-        group = self._record_icon if button == "record" else self._pause_bars
-        self._centre_in(self._buttons[button].box, [*group, item])
+        group = self._card.record_icon if button == "record" else self._card.pause_bars
+        self._centre_in(self._card.buttons[button].box, [*group, item])
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
-        button = self._buttons[name]
+        button = self._card.buttons[name]
         if button.enabled == enabled:
             return
         button.enabled = enabled
@@ -893,17 +893,17 @@ class OverlayWindow:
 
         if name == "record":
             self._canvas.itemconfig(
-                self._record_label, fill=theme.TEXT_BRIGHT if enabled else theme.DISABLED_INK
+                self._card.record_label, fill=theme.TEXT_BRIGHT if enabled else theme.DISABLED_INK
             )
         elif name == "pause":
             ink = theme.TEXT_BRIGHT if enabled else theme.DISABLED_INK
-            self._canvas.itemconfig(self._pause_label, fill=ink)
-            for bar in self._pause_bars:
+            self._canvas.itemconfig(self._card.pause_label, fill=ink)
+            for bar in self._card.pause_bars:
                 self._canvas.itemconfig(
                     bar, fill=theme.TEXT_MUTED if enabled else theme.DISABLED_INK
                 )
         elif name == "cancel":
-            for item in self._cancel_ink:
+            for item in self._card.cancel_ink:
                 self._canvas.itemconfig(
                     item, fill=theme.CANCEL_INK if enabled else theme.DISABLED_INK
                 )

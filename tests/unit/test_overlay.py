@@ -140,8 +140,8 @@ def test_a_notice_takes_the_footer_line_from_the_microphone_name(window):
 
     overlay._update()
 
-    assert overlay._canvas.itemcget(overlay._notice_text, "text").startswith("გამართვის")
-    assert overlay._canvas.itemcget(overlay._device_text, "text") == ""
+    assert overlay._canvas.itemcget(overlay._card.notice_text, "text").startswith("გამართვის")
+    assert overlay._canvas.itemcget(overlay._card.device_text, "text") == ""
 
 
 def test_the_microphone_name_comes_back_once_the_notice_is_stale(window):
@@ -152,8 +152,8 @@ def test_the_microphone_name_comes_back_once_the_notice_is_stale(window):
     controller.notice = ""
     overlay._update()
 
-    assert overlay._canvas.itemcget(overlay._notice_text, "text") == ""
-    assert "მიკროფონი" in overlay._canvas.itemcget(overlay._device_text, "text")
+    assert overlay._canvas.itemcget(overlay._card.notice_text, "text") == ""
+    assert "მიკროფონი" in overlay._canvas.itemcget(overlay._card.device_text, "text")
 
 
 def test_a_notice_too_long_for_the_line_is_trimmed_rather_than_overrunning(window):
@@ -165,9 +165,9 @@ def test_a_notice_too_long_for_the_line_is_trimmed_rather_than_overrunning(windo
     overlay._update()
     overlay._root.update_idletasks()
 
-    shown = overlay._canvas.itemcget(overlay._notice_text, "text")
-    bounds = overlay._canvas.bbox(overlay._notice_text)
-    assert bounds[2] - bounds[0] <= overlay._notice_room
+    shown = overlay._canvas.itemcget(overlay._card.notice_text, "text")
+    bounds = overlay._canvas.bbox(overlay._card.notice_text)
+    assert bounds[2] - bounds[0] <= overlay._card.notice_room
     assert shown.endswith("…")
 
 
@@ -191,7 +191,7 @@ def window(shared_window):
     controller.level = 0.5
     controller.notice = ""
     controller.calls.clear()
-    overlay._levels = [0.0] * BAR_COUNT
+    overlay._card.levels = [0.0] * BAR_COUNT
     if overlay._rewrite_mode:
         # One window serves the whole module; a test that switched modes must not hand
         # the next one a card of a different width.
@@ -211,7 +211,7 @@ def window(shared_window):
 
 
 def centre_of(overlay, name):
-    x0, y0, x1, y1 = overlay._buttons[name].box
+    x0, y0, x1, y1 = overlay._card.buttons[name].box
     return FakeEvent(x=(x0 + x1) // 2, y=(y0 + y1) // 2)
 
 
@@ -224,7 +224,7 @@ def click(overlay, name):
 def test_the_window_builds_and_paints(window):
     overlay, _, _ = window
     assert overlay._root.winfo_exists()
-    assert len(overlay._bars) == BAR_COUNT
+    assert len(overlay._card.bars) == BAR_COUNT
 
 
 @pytest.mark.parametrize("state", sorted(APPEARANCE))
@@ -236,12 +236,12 @@ def test_every_state_paints_without_raising(window, state):
     overlay._update()
     overlay._update()  # twice, so the enable/disable transitions run too
 
-    assert overlay._canvas.itemcget(overlay._status_text, "text") == APPEARANCE[state].words
+    assert overlay._canvas.itemcget(overlay._card.status_text, "text") == APPEARANCE[state].words
 
 
 def test_the_timer_is_shown_as_minutes_and_seconds(window):
     overlay, _, _ = window
-    assert overlay._canvas.itemcget(overlay._timer_text, "text") == "1:05"
+    assert overlay._canvas.itemcget(overlay._card.timer_text, "text") == "1:05"
 
 
 def test_the_meter_scrolls_the_level_history(window):
@@ -249,11 +249,11 @@ def test_the_meter_scrolls_the_level_history(window):
     controller.state = "recording"
     controller.level = 0.9
 
-    before = list(overlay._levels)
+    before = list(overlay._card.levels)
     overlay._update()
 
-    assert overlay._levels[-1] == 0.9
-    assert overlay._levels[:-1] == before[1:]
+    assert overlay._card.levels[-1] == 0.9
+    assert overlay._card.levels[:-1] == before[1:]
 
 
 def test_the_meter_falls_silent_when_not_recording(window):
@@ -266,7 +266,7 @@ def test_the_meter_falls_silent_when_not_recording(window):
     for _ in range(BAR_COUNT):
         overlay._update()
 
-    assert max(overlay._levels) == 0.0
+    assert max(overlay._card.levels) == 0.0
 
 
 def test_clicking_a_button_runs_its_command(window):
@@ -347,23 +347,23 @@ def test_a_corrupt_position_file_is_ignored(window):
 
 def test_a_button_that_raises_does_not_take_the_window_down(window):
     overlay, _, _ = window
-    original = overlay._buttons["record"].command
+    original = overlay._card.buttons["record"].command
 
     def explode():
         raise RuntimeError("something went wrong in the app")
 
-    overlay._buttons["record"].command = explode
+    overlay._card.buttons["record"].command = explode
     try:
         click(overlay, "record")  # must not raise
     finally:
-        overlay._buttons["record"].command = original
+        overlay._card.buttons["record"].command = original
 
     assert overlay._root.winfo_exists()
 
 
 def test_hovering_lights_the_button_and_leaving_puts_it_back(window):
     overlay, _, _ = window
-    first_row = overlay._buttons["record"].fill_items[0]
+    first_row = overlay._card.buttons["record"].fill_items[0]
 
     resting = overlay._canvas.itemcget(first_row, "fill")
     overlay._set_hover("record")
@@ -416,9 +416,9 @@ def test_the_microphone_greys_out_with_its_own_label(window):
     controller.state = "transcribing"
     overlay._update()
 
-    body = overlay._record_icon[0]
+    body = overlay._card.record_icon[0]
     assert overlay._canvas.itemcget(body, "outline") == theme.DISABLED_INK
-    assert overlay._canvas.itemcget(overlay._record_label, "fill") == theme.DISABLED_INK
+    assert overlay._canvas.itemcget(overlay._card.record_label, "fill") == theme.DISABLED_INK
 
 
 def test_a_button_disabled_under_the_pointer_stops_looking_clickable(window):
@@ -427,22 +427,22 @@ def test_a_button_disabled_under_the_pointer_stops_looking_clickable(window):
     controller.state = "recording"
     overlay._update()
     overlay._set_hover("cancel")
-    lit = overlay._canvas.itemcget(overlay._buttons["cancel"].fill_items[0], "fill")
+    lit = overlay._canvas.itemcget(overlay._card.buttons["cancel"].fill_items[0], "fill")
 
     controller.state = "idle"
     overlay._update()
 
-    assert not overlay._buttons["cancel"].hovered
-    assert overlay._canvas.itemcget(overlay._buttons["cancel"].fill_items[0], "fill") != lit
+    assert not overlay._card.buttons["cancel"].hovered
+    assert overlay._canvas.itemcget(overlay._card.buttons["cancel"].fill_items[0], "fill") != lit
 
 
 def test_the_button_contents_stay_centred_when_the_label_changes(window):
     """The group used to jump sideways by 8 pixels between "ჩაწერა" and "გაჩერება"."""
     overlay, controller, _ = window
-    box = overlay._buttons["record"].box
+    box = overlay._card.buttons["record"].box
 
     def offset():
-        bounds = overlay._canvas.bbox(*overlay._record_icon, overlay._record_label)
+        bounds = overlay._canvas.bbox(*overlay._card.record_icon, overlay._card.record_label)
         return abs((bounds[0] + bounds[2]) / 2 - (box[0] + box[2]) / 2)
 
     idle_offset = offset()
@@ -482,7 +482,7 @@ def test_the_status_dot_keeps_a_graded_halo(window):
     overlay, _, _ = window
     overlay._update()
 
-    rings = [overlay._canvas.itemcget(item, "fill") for item in overlay._dot_items]
+    rings = [overlay._canvas.itemcget(item, "fill") for item in overlay._card.dot_items]
     assert len(set(rings)) == len(rings)  # every ring a different shade
 
 
@@ -505,7 +505,7 @@ def test_folding_the_card_away_leaves_only_the_light_and_the_clock(window):
 
     assert overlay._collapsed
     assert overlay._root.winfo_width() < full_width
-    assert set(overlay._buttons) == {"fold"}  # nothing left that needs looking at
+    assert set(overlay._card.buttons) == {"fold"}  # nothing left that needs looking at
 
 
 def test_unfolding_brings_every_control_back(window):
@@ -518,7 +518,7 @@ def test_unfolding_brings_every_control_back(window):
 
     assert not overlay._collapsed
     assert overlay._root.winfo_width() == full_width
-    assert "record" in overlay._buttons
+    assert "record" in overlay._card.buttons
 
 
 @pytest.mark.parametrize("state", sorted(APPEARANCE))
@@ -610,7 +610,7 @@ def test_the_folded_strip_still_shows_the_rewrite_mode(window):
     overlay._root.update_idletasks()
 
     assert overlay._collapsed
-    assert "mode" in overlay._buttons  # the pill is painted on the strip too
+    assert "mode" in overlay._card.buttons  # the pill is painted on the strip too
     assert overlay._root.winfo_width() < narrow  # folded, but wider than a plain strip
 
 
@@ -620,7 +620,7 @@ def test_the_folded_strip_says_nothing_in_the_ordinary_mode(window):
     click(overlay, "fold")
     overlay._root.update_idletasks()
 
-    assert "mode" not in overlay._buttons
+    assert "mode" not in overlay._card.buttons
 
 
 @pytest.mark.parametrize("state", sorted(APPEARANCE))

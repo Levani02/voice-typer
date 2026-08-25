@@ -119,6 +119,48 @@ def format_elapsed(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}"
 
 
+@dataclass
+class Card:
+    """Everything one drawing of the card handed back, in a single record.
+
+    These used to be eighteen separate attributes on the window, and `_rebuild` had to
+    reset every one of them by hand after clearing the canvas. A stale canvas id is not
+    an error in Tk — it is a silent no-op, which is how a window ends up looking frozen —
+    so a forgotten line there produced a bug that raised nothing. Replacing the record
+    whole, in the same statement that clears the canvas, makes that mistake unavailable
+    rather than merely discouraged.
+
+    `folded` is which shape is presently *on the canvas*, which is not the same as the
+    window's `_collapsed` — the user's saved preference. They disagree for the moment
+    between flipping the preference and repainting, and anything reading the drawing must
+    key off this one.
+    """
+
+    folded: bool = False
+    buttons: dict[str, Button] = field(default_factory=dict)
+
+    # The level meter: its bars, the levels they show, and the settling short-circuit.
+    bars: list[int] = field(default_factory=list)
+    levels: list[float] = field(default_factory=lambda: [0.0] * BAR_COUNT)
+    meter_settled: bool = False
+    meter_colour: str = ""
+
+    # Text and glyphs. `0` is never a real Tk item id, so it is a safe "not drawn".
+    dot_items: list[int] = field(default_factory=list)
+    timer_text: int = 0
+    status_text: int = 0
+    badge_text: int = 0
+    notice_text: int = 0
+    device_text: int = 0
+    notice_room: int = 0
+    shown_notice: str = ""
+    record_label: int = 0
+    record_icon: list[int] = field(default_factory=list)
+    pause_label: int = 0
+    pause_bars: list[int] = field(default_factory=list)
+    cancel_ink: list[int] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class Metrics:
     """Design pixels to real ones, at this display's scaling and this user's preference.
