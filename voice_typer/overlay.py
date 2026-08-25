@@ -65,6 +65,7 @@ import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 from voice_typer import (  # noqa: E402
     card_buttons,
     card_menu,
+    card_painter,
     window_platform,
     window_state,
 )
@@ -147,7 +148,7 @@ class OverlayWindow:
             bg=self._backdrop,
         )
         self._canvas.pack(fill="both", expand=True)
-        self._paint_card()
+        self._repaint()
         self._build_menu()
         self._bind_events()
         self._root.update()
@@ -197,228 +198,33 @@ class OverlayWindow:
 
     # ------------------------------------------------------------------------- painting
 
-    def _paint_card(self) -> None:
-        if self._collapsed:
-            self._paint_collapsed_card()
-            return
+    # ------------------------------------------------------------------------- painting
 
-        margin = self._m.s(layout.CARD_MARGIN)
-        card = (
-            margin,
-            margin,
-            self._m.s(layout.WINDOW_WIDTH) - margin,
-            self._m.s(layout.WINDOW_HEIGHT) - margin,
-        )
-        theme.rounded_gradient(
-            self._canvas, card, self._m.s(layout.CARD_RADIUS), theme.CARD_TOP, theme.CARD_BOTTOM
-        )
-        theme.rounded_outline(self._canvas, card, self._m.s(layout.CARD_RADIUS), theme.CARD_BORDER)
+    def _repaint(self) -> None:
+        """Draw the card and take ownership of everything the canvas handed out.
 
-        self._paint_status_row()
-        self._paint_meter()
-        card_buttons.paint_row(self._canvas, self._m, self._card, self._button_actions())
-        self._paint_footer()
-
-    def _paint_collapsed_card(self) -> None:
-        """The folded strip: the state light, the running time, and the way back.
-
-        Deliberately not a smaller copy of the card. Everything that was left out is
-        something the user cannot act on without looking — and someone who folded the
-        window away is not looking at it.
+        The only place a `Card` is made. Every other reference to `self._card` is a read
+        of the drawing that is presently on the canvas, which is why clearing the canvas
+        and calling this must always happen together.
         """
-        margin = self._m.s(layout.CARD_MARGIN)
-        card = (
-            margin,
-            margin,
-            self._m.s(self._design_width) - margin,
-            self._m.s(layout.COLLAPSED_HEIGHT) - margin,
-        )
-        radius = self._m.s(layout.COLLAPSED_RADIUS)
-        theme.rounded_gradient(self._canvas, card, radius, theme.CARD_TOP, theme.CARD_BOTTOM)
-        theme.rounded_outline(self._canvas, card, radius, theme.CARD_BORDER)
-
-        y = round((card[1] + card[3]) / 2)  # a gradient is painted row by row: whole pixels
-        left = card[0] + self._m.s(layout.COLLAPSED_PAD)
-        right = card[2] - self._m.s(layout.COLLAPSED_PAD)
-
-        self._card.dot_items = theme.glow_dot(
-            self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
-        )
-        toggle = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
-        card_buttons.paint_fold(
+        self._card = card_painter.paint(
             self._canvas,
             self._m,
-            self._card,
-            toggle,
-            pointing_up=True,
-            command=self.toggle_collapsed,
-        )
-
-        edge = toggle[0] - self._m.s(10)
-        if self._rewrite_mode:
-            # Only in the mode that changes what gets pasted. The ordinary mode says
-            # nothing, so anything the folded strip does say is worth reading.
-            pill = (
-                edge - self._m.s(layout.MODE_PILL_WIDTH * 0.72),
-                y - self._m.c(9),
-                edge,
-                y + self._m.c(9),
-            )
-            card_buttons.paint_mode(
-                self._canvas,
-                self._m,
-                self._card,
-                pill,
-                rewrite=self._rewrite_mode,
-                command=self.toggle_rewrite_mode,
-            )
-            edge = pill[0] - self._m.s(8)
-
-        self._card.timer_text = self._canvas.create_text(
-            edge,
-            y,
-            text="0:00",
-            anchor="e",
-            fill=theme.ACCENT,
-            font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
-        )
-
-    def _paint_status_row(self) -> None:
-        left, right = self._m.inner_edges()
-        y = self._m.s(layout.STATUS_BASELINE)
-
-        self._card.dot_items = theme.glow_dot(
-            self._canvas, left + self._m.c(5), y, self._m.c(5), theme.ACCENT, theme.CARD_TOP
-        )
-        self._card.status_text = self._canvas.create_text(
-            left + self._m.c(22),
-            y,
-            text="",
-            anchor="w",
-            fill=theme.TEXT_BRIGHT,
-            font=self._m.font(theme.UI_FAMILY, theme.STATUS_PX),
-        )
-
-        # The fold control sits in the corner rather than in the button row: that row is
-        # for what to do with a recording, and folding the window is not one of those.
-        fold = (right - self._m.c(20), y - self._m.c(10), right, y + self._m.c(10))
-        card_buttons.paint_fold(
-            self._canvas,
-            self._m,
-            self._card,
-            fold,
-            pointing_up=False,
-            command=self.toggle_collapsed,
-        )
-
-        # The badge is sized with the lettering inside it rather than with the card, or
-        # a larger "F9" would push against its own border.
-        badge_right = fold[0] - self._m.s(10)
-        badge = (badge_right - self._m.c(34), y - self._m.c(10), badge_right, y + self._m.c(10))
-        theme.rounded_gradient(self._canvas, badge, self._m.c(5), "#26292c", "#1a1d20")
-        theme.rounded_outline(self._canvas, badge, self._m.c(5), "#3a3e43")
-        self._card.badge_text = self._canvas.create_text(
-            (badge[0] + badge[2]) / 2,
-            y,
-            text="F9",
-            fill=theme.TEXT_MUTED,
-            font=self._m.font(theme.MONO_FAMILY, theme.BADGE_PX),
-        )
-
-        # Measured from the badge, not from the card's edge: the badge is what the timer
-        # would collide with, and it is the thing whose width changes.
-        self._card.timer_text = self._canvas.create_text(
-            badge[0] - self._m.s(12),
-            y,
-            text="0:00",
-            anchor="e",
-            fill=theme.ACCENT,
-            font=self._m.font(theme.MONO_FAMILY, theme.MONO_PX),
-        )
-
-    def _paint_meter(self) -> None:
-        left, right = self._m.inner_edges(bleed=4)
-        middle = self._m.s(layout.METER_MIDDLE)
-
-        self._canvas.create_line(
-            left, middle, right, middle, fill=theme.blend(theme.ACCENT, theme.CARD_TOP, 0.35)
-        )
-
-        gap = self._m.s(layout.BAR_GAP)
-        span = (right - left - gap * (layout.BAR_COUNT - 1)) / layout.BAR_COUNT
-        for index in range(layout.BAR_COUNT):
-            x = left + index * (span + gap)
-            self._card.bars.append(
-                self._canvas.create_rectangle(
-                    x,
-                    middle - 0.5,
-                    x + span,
-                    middle + 0.5,
-                    fill=theme.blend(theme.ACCENT, theme.CARD_TOP, 0.5),
-                    width=0,
-                )
-            )
-
-    def _fit_text(self, item: int, text: str, room: int) -> None:
-        """Put text on an item, trimmed with an ellipsis until it fits.
-
-        Measured rather than counted, for the reason `_centre_in` already gives: how
-        wide a Georgian string comes out depends on the font Windows picked for it, so
-        a character budget is a guess and `bbox` is an answer.
-        """
-        self._canvas.itemconfig(item, text=text)
-        if not text:
-            return
-        while len(text) > 1:
-            bounds = self._canvas.bbox(item)
-            if bounds is None or bounds[2] - bounds[0] <= room:
-                return
-            text = text[:-2] + "…"
-            self._canvas.itemconfig(item, text=text)
-
-    def _paint_footer(self) -> None:
-        left, right = self._m.inner_edges(bleed=4)
-        y = self._m.s(layout.FOOTER_BASELINE)
-        font = self._m.font(theme.MONO_FAMILY, theme.FOOTER_PX)
-        # The mode lives here rather than in the button row: that row is for what to do
-        # with a recording, and this decides what happens to the words afterwards. It also
-        # has to be readable at a glance, which the footer line is and a fifth square
-        # button next to four others would not be.
-        pill = (
-            left,
-            y - self._m.s(layout.MODE_PILL_HEIGHT / 2),
-            left + self._m.s(layout.MODE_PILL_WIDTH),
-            y + self._m.s(layout.MODE_PILL_HEIGHT / 2),
-        )
-        card_buttons.paint_mode(
-            self._canvas,
-            self._m,
-            self._card,
-            pill,
+            self._actions(),
+            folded=self._collapsed,
             rewrite=self._rewrite_mode,
-            command=self.toggle_rewrite_mode,
         )
-        # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
-        # for those runs and a longer line collides with the mode pill on the left.
-        self._card.shown_notice = ""  # so a re-fit only happens when the message changes
-        self._card.device_text = self._canvas.create_text(
-            right, y, text="", anchor="e", fill=theme.TEXT_FAINT, font=font
-        )
-        # What the app had to say, in the space the microphone name usually occupies. It
-        # goes here rather than on the status row because an overlapping take can bring a
-        # message in while the next recording is already running, and hiding "იწერს" to
-        # show it would make the card lie about what it is doing. In its own family, not
-        # the footer's monospace: that font has no Georgian at all.
-        self._card.notice_text = self._canvas.create_text(
-            left + self._m.s(layout.MODE_PILL_WIDTH) + self._m.s(layout.NOTICE_GAP),
-            y,
-            text="",
-            anchor="w",
-            fill=layout.AMBER,
-            font=self._m.font(theme.UI_FAMILY, theme.FOOTER_PX),
-        )
-        self._card.notice_room = (
-            right - self._m.s(layout.MODE_PILL_WIDTH) - self._m.s(layout.NOTICE_GAP) - left
+
+    def _actions(self) -> card_buttons.Actions:
+        """What the drawn controls do. The window is the only object holding both the app
+        and the canvas, so it is where the two are introduced to each other."""
+        return card_buttons.Actions(
+            toggle_recording=self._controller.toggle_recording,
+            toggle_pause=self._controller.toggle_pause,
+            cancel_recording=self._controller.cancel_recording,
+            quit=self._controller.quit,
+            toggle_collapsed=self.toggle_collapsed,
+            toggle_rewrite_mode=self.toggle_rewrite_mode,
         )
 
     # ---------------------------------------------------------------------- folding away
@@ -456,7 +262,6 @@ class OverlayWindow:
         handed them out — so they are reset separately.
         """
         self._canvas.delete("all")
-        self._card = layout.Card()
         self._pressed = None
         self._drag_origin = None
 
@@ -473,7 +278,7 @@ class OverlayWindow:
 
         self._canvas.config(width=width, height=height)
         self._root.geometry(f"{width}x{height}+{x}+{y}")
-        self._paint_card()
+        self._repaint()
         self._update()
 
     # -------------------------------------------------------------------------- events
@@ -664,36 +469,16 @@ class OverlayWindow:
             self._card.device_text, text="" if notice else self._controller.ui_device_label()
         )
         if notice != self._card.shown_notice:
-            self._fit_text(self._card.notice_text, notice, self._card.notice_room)
+            card_painter.fit_text(
+                self._canvas, self._card.notice_text, notice, self._card.notice_room
+            )
             self._card.shown_notice = notice
 
-        self._update_meter(state, look.wave)
-        card_buttons.update(self._canvas, self._m, self._card, state, look)
-
-    def _update_meter(self, state: str, colour: str) -> None:
-        """Scroll the level history leftwards, newest at the right — a recorder's trace."""
+        # Whether the microphone is worth listening to is the window's judgement; the
+        # meter is only told what to draw.
         level = self._controller.ui_level() if state == "recording" else 0.0
-        level = 0.0 if level != level else min(1.0, max(0.0, level))  # NaN reads as 0
-        self._card.levels = [*self._card.levels[1:], level]
-
-        # Fourteen times a second, redrawing 58 rectangles that are all already flat is
-        # most of what this window costs while it sits there doing nothing.
-        settled = not any(self._card.levels)
-        if settled and self._card.meter_settled and colour == self._card.meter_colour:
-            return
-        self._card.meter_settled = settled
-        self._card.meter_colour = colour
-
-        middle = self._m.s(layout.METER_MIDDLE)
-        tallest = self._m.s(layout.METER_HEIGHT) - self._m.s(2)
-        floor = self._m.s(layout.BAR_MIN_HEIGHT)
-        faded = theme.blend(colour, theme.CARD_TOP, 0.45)
-
-        for index, bar in enumerate(self._card.bars):
-            height = max(floor, self._card.levels[index] * tallest)
-            x0, _, x1, _ = self._canvas.coords(bar)
-            self._canvas.coords(bar, x0, middle - height / 2, x1, middle + height / 2)
-            self._canvas.itemconfig(bar, fill=colour if height > floor else faded)
+        card_painter.show_meter(self._canvas, self._m, self._card, level=level, colour=look.wave)
+        card_buttons.update(self._canvas, self._m, self._card, state, look)
 
     # ------------------------------------------------------------------------ lifecycle
 

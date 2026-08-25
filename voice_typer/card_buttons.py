@@ -32,6 +32,11 @@ class Actions:
     toggle_pause: Command
     cancel_recording: Command
     quit: Command
+    # The fold and mode controls belong to the window itself, not to the app — folding
+    # changes nothing about recording, and the mode is the window's to show and the
+    # app's to act on.
+    toggle_collapsed: Command
+    toggle_rewrite_mode: Command
 
 
 def paint_row(canvas: tk.Canvas, m: Metrics, card: Card, actions: Actions) -> None:
