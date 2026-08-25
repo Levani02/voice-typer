@@ -89,6 +89,9 @@ class StubController:
     def open_rewrite_prompt(self):
         self._record("open_rewrite_prompt")
 
+    def reload_keys(self):
+        self._record("reload_keys")
+
     def open_logs(self):
         self._record("open_logs")
 

@@ -378,9 +378,13 @@ ENV_HEADER = (
 )
 
 
-def _env_lines_with_key(existing: list[str], key: str) -> list[str]:
-    """The file's lines with the key line replaced, or added if it was not there."""
-    prefix = f"{API_KEY_SETTING}="
+def _env_lines_with(existing: list[str], name: str, key: str) -> list[str]:
+    """The file's lines with one setting replaced, or added if it was not there.
+
+    Only the named line is touched. The file may hold the other key, `LOG_TRANSCRIPTS`,
+    or a comment somebody wrote themselves, and none of that is ours to rewrite.
+    """
+    prefix = f"{name}="
     updated = [prefix + key if line.strip().startswith(prefix) else line for line in existing]
     if not any(line.startswith(prefix) for line in updated):
         updated.append(prefix + key)
@@ -415,13 +419,14 @@ def ensure_settings_file() -> None:
             target.write_bytes(bundled.read_bytes())
 
 
-def save_api_key(key: str) -> None:
-    """Put the user's key into .env and make it live in this process straight away.
+def _save_key(name: str, key: str) -> None:
+    """Put one key into .env and make it live in this process straight away.
 
-    Called from the first-run window. Every other part of the app reads the key through
-    the environment, so setting it here means the app carries on without a restart.
+    Every other part of the app reads a key through the environment, so setting it here
+    means the app carries on without a restart.
 
-    The value is never logged and never included in an error message.
+    The value is never logged and never included in an error message. The file is
+    rewritten whole because it is a handful of lines, and only the named line changes.
     """
     key = key.strip()
     if not key:
@@ -433,10 +438,40 @@ def save_api_key(key: str) -> None:
         existing = list(ENV_HEADER)
 
     ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_PATH.write_text("\n".join(_env_lines_with_key(existing, key)) + "\n", encoding="utf-8")
+    ENV_PATH.write_text("\n".join(_env_lines_with(existing, name, key)) + "\n", encoding="utf-8")
     with contextlib.suppress(OSError):
         ENV_PATH.chmod(0o600)  # no effect on Windows, correct everywhere else
-    os.environ[API_KEY_SETTING] = key
+    os.environ[name] = key
+
+
+def save_api_key(key: str) -> None:
+    """The ElevenLabs key — the one the app cannot start without."""
+    _save_key(API_KEY_SETTING, key)
+
+
+def save_gemini_key(key: str) -> None:
+    """The Gemini key, which only the rewrite mode uses.
+
+    Optional by design: without it the words mode is untouched and the rewrite mode
+    pastes the raw transcript and says why. So nothing calls this unless the user has
+    actually typed something in.
+    """
+    _save_key(GEMINI_KEY_SETTING, key)
+
+
+def current_gemini_key() -> str:
+    """The Gemini key as it stands now, which is not always what startup saw.
+
+    `Config` is frozen and loaded once, which is right for every setting that lives in a
+    file the user edits between runs. This one can be written from inside the running app
+    by the keys window, so the app re-reads it rather than asking for a restart.
+    """
+    return (os.environ.get(GEMINI_KEY_SETTING) or "").strip()
+
+
+def has_gemini_key() -> bool:
+    """Whether the rewrite mode has what it needs. The value itself is not returned."""
+    return bool(current_gemini_key())
 
 
 def load_config(config_path: Path | None = None) -> Config:

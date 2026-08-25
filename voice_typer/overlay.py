@@ -158,6 +158,7 @@ class Controller(Protocol):
     def ui_rewrite_mode(self) -> bool: ...
     def copy_raw_text(self) -> None: ...
     def open_rewrite_prompt(self) -> None: ...
+    def reload_keys(self) -> None: ...
     def set_rewrite_mode(self, on: bool) -> None: ...
     def toggle_rewrite_mode(self) -> None: ...
     def usage_text(self) -> str: ...
@@ -845,10 +846,29 @@ class OverlayWindow:
             label="გამართვის ინსტრუქცია (rewrite-prompt.md)",
             command=lambda: self._safely(self._controller.open_rewrite_prompt),
         )
+        self._menu.add_command(
+            label="API გასაღებები…", command=lambda: self._safely(self._open_keys)
+        )
         self._menu.add_separator()
         self._menu.add_command(
             label="გამორთვა", command=lambda: self._safely(self._controller.quit)
         )
+
+    def _open_keys(self) -> None:
+        """The keys window, as a child of this one.
+
+        Opened here rather than in `app.py` because Tk allows exactly one root and this
+        object owns it — a second `tk.Tk()` from the state machine would be a second
+        event loop and a hung window. The app is told afterwards, so a key typed in just
+        now takes effect on the next dictation rather than after a restart.
+
+        Imported inside the function: the window is a rare path and the module pulls in
+        the whole first-run screen, which nothing else here needs.
+        """
+        from voice_typer.first_run import ask_for_keys
+
+        if ask_for_keys(self._root):
+            self._controller.reload_keys()
 
     def _add_menu_entry(self, name: str, **options) -> None:
         """Add an entry and remember where it landed, for `_sync_menu` to find later."""

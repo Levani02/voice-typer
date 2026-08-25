@@ -119,7 +119,12 @@ Detailed rules: [.claude/rules/interaction.md](.claude/rules/interaction.md)
   and nowhere else. Never in code, never in a log, never in a commit, never printed in a
   response — not even partially masked. The Gemini key is optional; without it the rewrite
   mode pastes the raw transcript and says so.
-- The key file is edited by the user alone. Claude supplies the line to paste, nothing more.
+- **The app asks for both keys itself** — `first_run.py` shows two fields, ElevenLabs
+  required and Gemini optional, and the same window reopens from the card's menu so an
+  existing install can add the second key without editing a file. An empty field means
+  "leave that one alone": saving one key must never disturb the other.
+- Claude does not edit the key file. If a key has to be set outside the app, Claude
+  supplies the line to paste and stops there.
 - Recorded audio is the user's own voice. Takes live in `logs/pending/` only between the
   start of their upload and the moment their text lands in a window.
 - Transcripts are not logged by default — only their character count. `LOG_TRANSCRIPTS=true`

@@ -8,9 +8,18 @@ Two things must hold every time: the rest of the file survives, and the key neve
 import pytest
 
 from voice_typer import config as config_module
-from voice_typer.config import ConfigError, MissingApiKeyError, load_config, save_api_key
+from voice_typer.config import (
+    ConfigError,
+    MissingApiKeyError,
+    current_gemini_key,
+    has_gemini_key,
+    load_config,
+    save_api_key,
+    save_gemini_key,
+)
 
 SECRET = "sk_not_a_real_key_9876543210"
+GEMINI_SECRET = "AIza_not_a_real_key_0123456789"
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +27,7 @@ def isolate_env(monkeypatch, tmp_path):
     """Never touch the developer's own .env."""
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("LOG_TRANSCRIPTS", raising=False)
     return tmp_path / ".env"
 
@@ -78,6 +88,46 @@ def test_the_key_never_appears_in_the_refusal(isolate_env):
         save_api_key("")
     except ConfigError as exc:
         assert "sk_" not in str(exc)
+
+
+def test_the_gemini_key_is_saved_the_same_way_and_takes_effect_at_once(isolate_env):
+    """The second key exists so the rewrite mode can be switched on from inside the app
+    rather than by opening a settings file in Notepad."""
+    save_gemini_key(GEMINI_SECRET)
+
+    assert f"GEMINI_API_KEY={GEMINI_SECRET}" in isolate_env.read_text(encoding="utf-8")
+    assert current_gemini_key() == GEMINI_SECRET
+    assert has_gemini_key()
+
+
+def test_saving_one_key_never_disturbs_the_other(isolate_env):
+    """Both live in the same file, and writing either one rewrites it. This is the test
+    that stops the app deleting a key the user cannot get back without a trip to a
+    website."""
+    save_api_key(SECRET)
+    save_gemini_key(GEMINI_SECRET)
+
+    written = isolate_env.read_text(encoding="utf-8")
+    assert f"ELEVENLABS_API_KEY={SECRET}" in written
+    assert f"GEMINI_API_KEY={GEMINI_SECRET}" in written
+
+    save_api_key("sk_a_replacement_key_1111")
+
+    written = isolate_env.read_text(encoding="utf-8")
+    assert f"GEMINI_API_KEY={GEMINI_SECRET}" in written  # untouched
+    assert SECRET not in written
+
+
+def test_no_gemini_key_is_not_an_error_it_is_a_mode_that_says_so(isolate_env):
+    """The whole reason the second field may be left empty."""
+    assert not has_gemini_key()
+    assert current_gemini_key() == ""
+
+
+def test_an_empty_gemini_key_is_refused_rather_than_written(isolate_env):
+    with pytest.raises(ConfigError):
+        save_gemini_key("   ")
+    assert not isolate_env.exists()
 
 
 def test_settings_are_written_out_beside_a_packaged_build(monkeypatch, tmp_path):

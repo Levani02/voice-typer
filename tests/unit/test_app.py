@@ -861,6 +861,21 @@ def test_the_user_is_told_when_the_words_went_out_unpolished(logs, pasted):
     assert any("გამართვის გარეშე" in message for message in tray.messages)
 
 
+def test_a_key_typed_into_the_app_takes_effect_without_a_restart(logs, monkeypatch):
+    """The keys window writes into the environment and tells the app to look again.
+
+    Checked on the app's own copy rather than by dictating: a run with a key set would
+    reach for the network, and no test in this project is allowed to spend money.
+    """
+    app = build_app()
+    assert app._gemini_key == ""  # `Config` is frozen and was built without one
+
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza_not_a_real_key_0123456789")
+    app.reload_keys()
+
+    assert app._gemini_key == "AIza_not_a_real_key_0123456789"
+
+
 def test_the_card_shows_the_short_form_and_the_tray_the_sentence(logs, pasted):
     """165 pixels of footer against a tray balloon with a title and a paragraph. The
     prefix would spend a third of the card's line repeating the pill beside it."""

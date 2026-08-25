@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from voice_typer.config import CONFIG_PATH, LOGS_DIR, Config
+from voice_typer.config import CONFIG_PATH, LOGS_DIR, Config, current_gemini_key
 from voice_typer.focus import foreground_window, is_our_window
 from voice_typer.hotkey import Action, HotkeyListener
 from voice_typer.injector import (
@@ -147,6 +147,12 @@ class App:
         # Assigned whole, never mutated in place, so the window's thread can never read
         # a message paired with the wrong timestamp. That is the entire locking story.
         self._notice: tuple[str, float] = ("", 0.0)
+        # The one setting that can change while the app runs. `Config` is frozen and
+        # loaded once, which is right for everything the user edits in a file — but the
+        # keys window writes this one from inside the running app, and asking somebody
+        # to restart after typing a key into the app itself is the friction that window
+        # exists to remove.
+        self._gemini_key = config.gemini_api_key
         self._auto_stop: threading.Timer | None = None
         self._error_reset: threading.Timer | None = None
         self._transcribing = threading.Lock()  # serialises the uploads themselves
@@ -304,6 +310,11 @@ class App:
         if self._device_label is None:
             self._device_label = _describe_input_device(self._config.input_device)
         return self._device_label
+
+    def reload_keys(self) -> None:
+        """Pick up a key the keys window just wrote, without a restart."""
+        self._gemini_key = current_gemini_key()
+        logger.info("keys reloaded: gemini=%s", bool(self._gemini_key))
 
     def ui_notice(self) -> str:
         """The last thing the app had to say, while it is still worth saying.
@@ -544,7 +555,7 @@ class App:
 
         result = rewrite(
             text,
-            api_key=self._config.gemini_api_key,
+            api_key=self._gemini_key,
             model=self._config.rewrite_model,
             prompt=load_prompt(self._config.rewrite_prompt_path),
             timeout_ms=self._config.rewrite_timeout_ms,
