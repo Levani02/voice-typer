@@ -76,15 +76,24 @@ run up a bill.
 | Mode | What happens after ElevenLabs returns |
 | --- | --- |
 | **სიტყვები** (words) | **Nothing.** `no_verbatim` and `filler_words` remove hesitation sounds, Scribe punctuates, and no model touches the text. |
-| **გამართვა** (rewrite) | The transcript — text, never audio — goes to Gemini and comes back tidied. |
+| **გამართვა** (rewrite) | The transcript — text, never audio — goes to Gemini and comes back **condensed**: every topic the speaker raised survives, tightened, and what they retracted mid-sentence does not. |
 
 Keeping the words mode deterministic is the point: it makes the choice between the two a
 real choice, one that cannot alter what you said. **Do not add a model to the words mode.**
 
 `rewrite()` never raises for an ordinary failure. No key, no network, a timeout, an answer
-in the wrong alphabet, an answer far too long or short — each returns the **original
-transcript** plus a short reason shown on the card. A dictation can never be destroyed by
-the rewrite being unavailable.
+in the wrong alphabet, an answer far too long or short, or one carrying a number nobody
+said — each returns the **original transcript** plus a short reason shown on the card. A
+dictation can never be destroyed by the rewrite being unavailable.
+
+The facts guard runs in one direction on purpose. Condensing only ever deletes, so
+demanding that every spoken number survive would refuse the retraction the mode exists to
+handle. Inventing is never legitimate, and catches alteration for free. The log records
+counts, never the numbers themselves.
+
+Reasons are English constants in `rewrite.py` so the log stays greppable; `app.py` owns
+the Georgian the card shows. Every `_notify` now reaches the card as well as the tray —
+on macOS, where there is no tray, those messages were previously seen by nobody.
 
 ## How Claude Should Work With the User
 
@@ -139,8 +148,12 @@ Detailed rules: [.claude/rules/testing.md](.claude/rules/testing.md)
 ## Code Quality
 
 - Functions under 50 lines, files under 400 lines, nesting depth 4 or less
-- **Known debt:** `voice_typer/overlay.py` is over 1100 lines against that 400-line limit.
-  Do not add to it without splitting something out.
+- **Known debt:** `voice_typer/overlay.py` is about 1100 lines against that 400-line
+  limit, and `app.py` is over 700. Do not add to either without splitting something out —
+  `card_glyphs.py` is what the card's notice line paid with. The two seams still
+  available in `overlay.py` are the right-click menu and the window-position
+  persistence; the second is the more valuable, because it would make five behaviours
+  testable without a desktop session.
 - Every audio stream and every clipboard change is cleaned up on the error path too
 - Zero hardcoded settings — hotkey, timings, device, model names, thresholds and the cost
   rate all live in `config.json`, validated at startup, unknown keys rejected

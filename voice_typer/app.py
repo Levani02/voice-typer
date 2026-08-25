@@ -38,7 +38,18 @@ from voice_typer.injector import (
 )
 from voice_typer.platform_support import open_path
 from voice_typer.recorder import Recorder, RecorderError, Recording, wav_duration_seconds
-from voice_typer.rewrite import load_prompt, rewrite
+from voice_typer.rewrite import (
+    REASON_EMPTY,
+    REASON_EMPTY_ANSWER,
+    REASON_NO_ANSWER,
+    REASON_NO_KEY,
+    REASON_NUMBERS,
+    REASON_TOO_DIFFERENT,
+    REASON_TOO_SHORT,
+    REASON_WRONG_LANGUAGE,
+    load_prompt,
+    rewrite,
+)
 from voice_typer.transcriber import (
     NothingToPasteError,
     Transcriber,
@@ -59,6 +70,27 @@ USAGE_PATH = LOGS_DIR / "usage.json"
 # How long the icon stays dark red before returning to grey. Long enough to notice,
 # short enough that the app does not look permanently broken.
 ERROR_DISPLAY_SECONDS = 6.0
+
+# How long the card keeps the last thing the app had to say. The same six seconds the
+# error colour gets, for the same reason: long enough to read, short enough that a
+# stale line is never mistaken for a live one.
+NOTICE_SECONDS = 6.0
+
+# What the user reads when the rewrite did not happen. The keys stay English so the log
+# is greppable and pasteable; the card is Georgian because the rest of the card is. This
+# is the same split `_report_error` already makes — detail to the file, a sentence to
+# the screen. Short on purpose: the footer line is narrow, and Consolas has no Georgian,
+# so Tk substitutes a wider font for these runs.
+REASON_IN_GEORGIAN = {
+    REASON_EMPTY: "ტექსტი ცარიელია",
+    REASON_TOO_SHORT: "ტექსტი მოკლეა",
+    REASON_NO_KEY: "Gemini-ის გასაღები არ არის",
+    REASON_NO_ANSWER: "პასუხი ვერ მოვიდა",
+    REASON_EMPTY_ANSWER: "პასუხი ცარიელი დაბრუნდა",
+    REASON_TOO_DIFFERENT: "ძალიან შეიცვალა",
+    REASON_WRONG_LANGUAGE: "სხვა ენაზე დაბრუნდა",
+    REASON_NUMBERS: "რიცხვები არ ემთხვევა",
+}
 
 # How long Quit waits for a transcription already in flight. Kept short: the audio is on
 # disk either way, so this is only about finishing gracefully — and the wait happens on
@@ -112,6 +144,9 @@ class App:
             config.hotkey, config.hold_threshold_ms, self._handle_action
         )
         self._tray: TrayIcon | None = None
+        # Assigned whole, never mutated in place, so the window's thread can never read
+        # a message paired with the wrong timestamp. That is the entire locking story.
+        self._notice: tuple[str, float] = ("", 0.0)
         self._auto_stop: threading.Timer | None = None
         self._error_reset: threading.Timer | None = None
         self._transcribing = threading.Lock()  # serialises the uploads themselves
@@ -270,8 +305,18 @@ class App:
             self._device_label = _describe_input_device(self._config.input_device)
         return self._device_label
 
+    def ui_notice(self) -> str:
+        """The last thing the app had to say, while it is still worth saying.
+
+        The window polls this like everything else it draws, so nothing here ever calls
+        into Tk from a worker thread — and the message expires by itself rather than
+        needing a timer on either side.
+        """
+        message, said_at = self._notice
+        return message if time.monotonic() - said_at < NOTICE_SECONDS else ""
+
     def ui_rewrite_mode(self) -> bool:
-        """True when the instruction rides in front of the words."""
+        """True when the words go to Gemini before they are pasted."""
         return self._rewrite_mode
 
     def set_rewrite_mode(self, on: bool) -> None:
@@ -510,7 +555,13 @@ class App:
             # Not an error state — the words are landing either way. But saying nothing
             # would leave the user thinking the mode is broken when it is behaving as
             # designed: a missing key and a dropped network look identical on screen.
-            self._notify(f"გამართვის გარეშე ჩაისვა — {result.fallback_reason}")
+            reason = REASON_IN_GEORGIAN.get(
+                result.fallback_reason or "", result.fallback_reason or ""
+            )
+            # The card gets the reason alone. The pill beside it already says გამართვა, so
+            # the prefix would spend a third of the line repeating what is next to it — and
+            # measured at this card size, the sentence does not fit while every reason does.
+            self._notify(f"გამართვის გარეშე — {reason}", card=reason)
         return result.text
 
     def _record_usage(self, transcript: Transcript, measured_seconds: float) -> None:
@@ -631,7 +682,19 @@ class App:
         """
         self._set_state(_TRAY_STATE_FOR[self.ui_state()])
 
-    def _notify(self, message: str) -> None:
+    def _notify(self, message: str, *, card: str | None = None) -> None:
+        """Say something the user needs to see.
+
+        It goes to the card first and the tray second. The tray was the only channel
+        until now, which meant Windows could file it behind the ^ arrow and macOS — where
+        there is no tray at all — dropped every one of these messages on the floor.
+
+        `card` exists because the two surfaces are not the same size. A tray balloon has a
+        title and a paragraph; the card has the strip of footer left over beside the mode
+        pill, measured at 165 pixels on this user's own settings. Where a message has a
+        short form, the card gets it and the tray gets the sentence.
+        """
+        self._notice = (card or message, time.monotonic())
         if self._tray is not None:
             self._tray.notify(message)
 

@@ -19,6 +19,7 @@ from voice_typer.config import Config
 from voice_typer.hotkey import Action
 from voice_typer.injector import ClipboardUnavailableError, PasteFailedError
 from voice_typer.recorder import Recording, build_wav
+from voice_typer.rewrite import ALL_REASONS, REASON_NO_KEY
 from voice_typer.transcriber import (
     NothingToPasteError,
     Transcript,
@@ -858,6 +859,64 @@ def test_the_user_is_told_when_the_words_went_out_unpolished(logs, pasted):
     run_one_job(app)
 
     assert any("გამართვის გარეშე" in message for message in tray.messages)
+
+
+def test_the_card_shows_the_short_form_and_the_tray_the_sentence(logs, pasted):
+    """165 pixels of footer against a tray balloon with a title and a paragraph. The
+    prefix would spend a third of the card's line repeating the pill beside it."""
+    tray = FakeTray()
+    app = build_app(tray=tray)
+    app.toggle_rewrite_mode()
+
+    run_one_job(app)
+
+    assert app.ui_notice() == app_module.REASON_IN_GEORGIAN[REASON_NO_KEY]
+    assert any("გამართვის გარეშე" in message for message in tray.messages)
+
+
+def test_the_card_is_told_too_and_not_only_the_tray(logs, pasted):
+    """The tray was the only channel until now. Windows files those behind the ^ arrow,
+    and on macOS there is no tray at all — so on that platform not one of these messages
+    had ever been seen by anybody."""
+    app = build_app(tray=None)
+    app.toggle_rewrite_mode()
+
+    run_one_job(app)
+
+    assert app.ui_notice()  # the run has no Gemini key, so the rewrite could not happen
+
+
+def test_the_card_gets_georgian_and_the_log_keeps_the_english(logs, pasted):
+    """The reason is an English key so the log stays greppable. The card is Georgian
+    because every other word on it is."""
+    app = build_app()
+    app.toggle_rewrite_mode()
+
+    run_one_job(app)
+
+    notice = app.ui_notice()
+    assert not any(reason in notice for reason in ALL_REASONS)
+    assert "გასაღები" in notice  # the run has no Gemini key
+    assert notice == app_module.REASON_IN_GEORGIAN[REASON_NO_KEY]
+
+
+def test_every_reason_has_a_georgian_phrase():
+    """A missing entry would put an English key on a Georgian card, and only a total
+    mapping can promise it does not."""
+    assert set(ALL_REASONS) == set(app_module.REASON_IN_GEORGIAN)
+    assert all(app_module.REASON_IN_GEORGIAN[reason] for reason in ALL_REASONS)
+
+
+def test_the_notice_stops_being_shown_once_it_is_stale(logs, pasted, monkeypatch):
+    """A message that outlives its moment is worse than none: the user reads it as a
+    description of what just happened."""
+    monkeypatch.setattr(app_module, "NOTICE_SECONDS", 0.0)
+    app = build_app()
+    app.toggle_rewrite_mode()
+
+    run_one_job(app)
+
+    assert app.ui_notice() == ""
 
 
 def test_switching_the_mode_back_pastes_the_words_again(logs, pasted):

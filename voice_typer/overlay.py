@@ -63,8 +63,8 @@ _point_tcl_at_the_base_installation()
 
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
+from voice_typer import card_glyphs, window_platform  # noqa: E402
 from voice_typer import widget_theme as theme  # noqa: E402
-from voice_typer import window_platform  # noqa: E402
 from voice_typer.window_platform import STANDARD_DPI  # noqa: E402
 
 REFRESH_MS = 70  # fast enough for the level bars to look alive
@@ -84,6 +84,9 @@ COLLAPSED_PAD = 16
 COLLAPSED_MODE_EXTRA = 104
 MODE_PILL_WIDTH = 132
 MODE_PILL_HEIGHT = 19
+
+# Clear air between the mode pill and a notice, in design pixels.
+NOTICE_GAP = 10
 CARD_MARGIN = 6
 CARD_RADIUS = 18
 BUTTON_RADIUS = 10
@@ -151,6 +154,7 @@ class Controller(Protocol):
     def ui_level(self) -> float: ...
     def ui_hotkey_label(self) -> str: ...
     def ui_device_label(self) -> str: ...
+    def ui_notice(self) -> str: ...
     def ui_rewrite_mode(self) -> bool: ...
     def copy_raw_text(self) -> None: ...
     def open_rewrite_prompt(self) -> None: ...
@@ -565,7 +569,9 @@ class OverlayWindow:
     def _paint_record_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
         icon_x = box[0] + self._s(30)
-        self._record_icon = self._draw_microphone(icon_x, centre_y, theme.ACCENT)
+        self._record_icon = card_glyphs.draw_microphone(
+            self._canvas, icon_x, centre_y, theme.ACCENT, self._c
+        )
         self._record_label = self._canvas.create_text(
             icon_x + self._c(15),
             centre_y,
@@ -593,53 +599,12 @@ class OverlayWindow:
             for item in items:
                 self._canvas.move(item, shift, 0)
 
-    def _draw_microphone(self, x: float, y: float, colour: str) -> list[int]:
-        """A microphone: capsule body, the cradle under it, and the stem.
-
-        Sized against the button rather than copied from the design's own pixels — the
-        card here is 58% of the design's width, so the design's 20px glyph would read as
-        twice the weight beside a label that did scale down.
-        """
-        stroke = max(1, self._c(1.4))
-        return [
-            self._canvas.create_oval(
-                x - self._c(2.4),
-                y - self._c(6),
-                x + self._c(2.4),
-                y + self._c(0.5),
-                outline=colour,
-                width=stroke,
-            ),
-            self._canvas.create_arc(
-                x - self._c(4.6),
-                y - self._c(4),
-                x + self._c(4.6),
-                y + self._c(4.4),
-                start=200,
-                extent=140,
-                style="arc",
-                outline=colour,
-                width=stroke,
-            ),
-            self._canvas.create_line(
-                x, y + self._c(4.4), x, y + self._c(6.6), fill=colour, width=stroke
-            ),
-        ]
-
     def _paint_pause_face(self, box: tuple[int, int, int, int]) -> None:
         centre_y = (box[1] + box[3]) / 2
         icon_x = box[0] + self._s(30)
-        self._pause_bars = [
-            self._canvas.create_rectangle(
-                icon_x + self._c(offset),
-                centre_y - self._c(5.5),
-                icon_x + self._c(offset + 2.4),
-                centre_y + self._c(5.5),
-                fill=theme.TEXT_MUTED,
-                width=0,
-            )
-            for offset in (0, 4.8)
-        ]
+        self._pause_bars = card_glyphs.draw_pause_bars(
+            self._canvas, icon_x, centre_y, theme.TEXT_MUTED, self._c
+        )
         self._pause_label = self._canvas.create_text(
             icon_x + self._c(15),
             centre_y,
@@ -652,36 +617,28 @@ class OverlayWindow:
 
     def _paint_cross(self, box: tuple[int, int, int, int], colour: str) -> None:
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        arm = self._c(4)
-        stroke = max(1, self._c(1.6))
-        self._cancel_ink = [
-            self._canvas.create_line(x - arm, y - arm, x + arm, y + arm, fill=colour, width=stroke),
-            self._canvas.create_line(x + arm, y - arm, x - arm, y + arm, fill=colour, width=stroke),
-        ]
+        self._cancel_ink = card_glyphs.draw_cross(self._canvas, x, y, colour, self._c)
 
     def _paint_power(self, box: tuple[int, int, int, int], colour: str) -> None:
-        """The standard power glyph: a ring open at the top, with a stroke through the gap.
-
-        Tk measures arc angles anticlockwise from three o'clock, so a gap centred on
-        twelve o'clock means starting past it and sweeping the rest of the way round.
-        """
         x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + self._s(0.5)
-        ring = self._c(5.2)
-        stroke = max(1, self._c(1.6))
-        self._canvas.create_arc(
-            x - ring,
-            y - ring,
-            x + ring,
-            y + ring,
-            start=125,
-            extent=290,
-            style="arc",
-            outline=colour,
-            width=stroke,
-        )
-        self._canvas.create_line(
-            x, y - self._c(7.4), x, y - self._c(1.4), fill=colour, width=stroke
-        )
+        card_glyphs.draw_power(self._canvas, x, y, colour, self._c)
+
+    def _fit_text(self, item: int, text: str, room: int) -> None:
+        """Put text on an item, trimmed with an ellipsis until it fits.
+
+        Measured rather than counted, for the reason `_centre_in` already gives: how
+        wide a Georgian string comes out depends on the font Windows picked for it, so
+        a character budget is a guess and `bbox` is an answer.
+        """
+        self._canvas.itemconfig(item, text=text)
+        if not text:
+            return
+        while len(text) > 1:
+            bounds = self._canvas.bbox(item)
+            if bounds is None or bounds[2] - bounds[0] <= room:
+                return
+            text = text[:-2] + "…"
+            self._canvas.itemconfig(item, text=text)
 
     def _paint_footer(self) -> None:
         left, right = self._inner_edges(bleed=4)
@@ -700,9 +657,24 @@ class OverlayWindow:
         self._paint_mode_button(pill)
         # Kept short on purpose: Consolas has no Georgian, so Tk substitutes a wider font
         # for those runs and a longer line collides with the mode pill on the left.
+        self._shown_notice = ""  # so a re-fit only happens when the message changes
         self._device_text = self._canvas.create_text(
             right, y, text="", anchor="e", fill=theme.TEXT_FAINT, font=font
         )
+        # What the app had to say, in the space the microphone name usually occupies. It
+        # goes here rather than on the status row because an overlapping take can bring a
+        # message in while the next recording is already running, and hiding "იწერს" to
+        # show it would make the card lie about what it is doing. In its own family, not
+        # the footer's monospace: that font has no Georgian at all.
+        self._notice_text = self._canvas.create_text(
+            left + self._s(MODE_PILL_WIDTH) + self._s(NOTICE_GAP),
+            y,
+            text="",
+            anchor="w",
+            fill=AMBER,
+            font=self._font(theme.UI_FAMILY, theme.FOOTER_PX),
+        )
+        self._notice_room = right - self._s(MODE_PILL_WIDTH) - self._s(NOTICE_GAP) - left
 
     # ---------------------------------------------------------------------- folding away
 
@@ -1012,7 +984,16 @@ class OverlayWindow:
 
         self._canvas.itemconfig(self._status_text, text=look.words)
         self._canvas.itemconfig(self._badge_text, text=self._controller.ui_hotkey_label())
-        self._canvas.itemconfig(self._device_text, text=self._controller.ui_device_label())
+        # One line, two things to say. The message wins while it lasts: which microphone
+        # is in use is the least urgent thing on the card, and the only reason someone
+        # reads that line at all is to find out why something did not happen.
+        notice = self._controller.ui_notice()
+        self._canvas.itemconfig(
+            self._device_text, text="" if notice else self._controller.ui_device_label()
+        )
+        if notice != self._shown_notice:
+            self._fit_text(self._notice_text, notice, self._notice_room)
+            self._shown_notice = notice
 
         self._update_meter(state, look.wave)
         self._update_buttons(state, look)

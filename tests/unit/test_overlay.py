@@ -31,6 +31,7 @@ class StubController:
         self.state = state
         self.level = 0.5
         self.rewrite_mode = False
+        self.notice = ""
         self.calls: list[str] = []
 
     def ui_state(self):
@@ -47,6 +48,9 @@ class StubController:
 
     def ui_device_label(self):
         return "მიკროფონი: Microphone Array"
+
+    def ui_notice(self):
+        return self.notice
 
     def ui_rewrite_mode(self):
         return self.rewrite_mode
@@ -123,12 +127,65 @@ def shared_window(tmp_path_factory):
     overlay._destroy()
 
 
+def test_a_notice_takes_the_footer_line_from_the_microphone_name(window):
+    """One line, two things to say. Which microphone is in use is the least urgent thing
+    on the card, and nobody reads that line except to find out why something did not
+    happen."""
+    overlay, controller, _ = window
+    controller.notice = "გამართვის გარეშე — პასუხი ვერ მოვიდა"
+
+    overlay._update()
+
+    assert overlay._canvas.itemcget(overlay._notice_text, "text").startswith("გამართვის")
+    assert overlay._canvas.itemcget(overlay._device_text, "text") == ""
+
+
+def test_the_microphone_name_comes_back_once_the_notice_is_stale(window):
+    overlay, controller, _ = window
+    controller.notice = "გამართვის გარეშე — ძალიან შეიცვალა"
+    overlay._update()
+
+    controller.notice = ""
+    overlay._update()
+
+    assert overlay._canvas.itemcget(overlay._notice_text, "text") == ""
+    assert "მიკროფონი" in overlay._canvas.itemcget(overlay._device_text, "text")
+
+
+def test_a_notice_too_long_for_the_line_is_trimmed_rather_than_overrunning(window):
+    """The longest message the app can produce is far wider than the gap beside the mode
+    pill, and a line that runs into the pill is worse than one that ends in an ellipsis."""
+    overlay, controller, _ = window
+    controller.notice = "ტექსტად გარდაქმნა ვერ მოხერხდა — ჩანაწერი შენახულია და ხელახლა გაიგზავნება"
+
+    overlay._update()
+    overlay._root.update_idletasks()
+
+    shown = overlay._canvas.itemcget(overlay._notice_text, "text")
+    bounds = overlay._canvas.bbox(overlay._notice_text)
+    assert bounds[2] - bounds[0] <= overlay._notice_room
+    assert shown.endswith("…")
+
+
+def test_a_notice_does_not_stop_the_folded_card_from_painting(window):
+    """The folded strip has no room for the line and never paints it. Reaching for an
+    item the folded card did not create would raise fourteen times a second."""
+    overlay, controller, _ = window
+    controller.notice = "გამართვის გარეშე — გასაღები არ არის"
+    overlay.toggle_collapsed()
+
+    overlay._update()  # must not raise
+
+    assert overlay._collapsed
+
+
 @pytest.fixture
 def window(shared_window):
     """Hand each test a clean slate on the one window that exists."""
     overlay, controller, path = shared_window
     controller.state = "idle"
     controller.level = 0.5
+    controller.notice = ""
     controller.calls.clear()
     overlay._levels = [0.0] * BAR_COUNT
     if overlay._rewrite_mode:
