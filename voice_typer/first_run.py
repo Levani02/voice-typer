@@ -25,6 +25,7 @@ import logging
 import tkinter as tk
 import webbrowser
 
+from voice_typer import tcl_paths
 from voice_typer import widget_theme as theme
 from voice_typer.config import ConfigError, has_gemini_key, save_api_key, save_gemini_key
 from voice_typer.desktop_shortcut import create_desktop_shortcut
@@ -78,6 +79,11 @@ class KeysWindow:
         self._saved = False
         self._later = master is not None
         self._own_root = master is None
+        if master is None:
+            # A root of our own, which on Windows needs Tcl pointed at the real Python
+            # installation first. Until this line that only worked because `main.py`
+            # imports the overlay — which does the same thing — a few lines earlier.
+            tcl_paths.point_at_the_base_installation()
         self._root: tk.Misc = tk.Toplevel(master) if master is not None else tk.Tk()
         self._build()
 

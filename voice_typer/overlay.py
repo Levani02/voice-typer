@@ -4,7 +4,7 @@ A tray icon was not enough: Windows 11 hides new tray icons behind the "^" arrow
 default, so the only status indicator the app had was invisible until the user went
 looking for it.
 
-The window is frameless, always on top, and draggable. Four things about it are
+The window is frameless, always on top, and draggable. Three things about it are
 load-bearing rather than cosmetic:
 
 * **It never takes focus.** `window_platform` marks the real window non-activating, so
@@ -14,51 +14,30 @@ load-bearing rather than cosmetic:
 * **It only reads.** Every value on screen is polled from the app; the window owns no
   state of its own. That keeps it safe to update from the Tk thread while recording,
   transcription, and timers run on three others.
-* **It is drawn, not laid out.** Tk has no gradients, rounded corners, shadows or alpha,
-  and the design has all four — so the card is painted on a Canvas. See `widget_theme`.
-* **Every measurement below is in design pixels at 100% scaling**, multiplied by the
-  display's real scaling factor through `_s`. Drawing at a fixed size and letting Windows
-  stretch the result is what makes an overlay look soft and chunky on a scaled display.
+* **It does not draw.** Not one canvas call is made here. `card_painter` draws and hands
+  back a record of everything it made; this file owns the root, the canvas widget, the
+  pointer, and the user's remembered choices, and nothing else.
+
+The rest of the card lives next door: `card_layout` for measurements and colours,
+`card_painter` and `card_buttons` for the drawing, `card_menu` for the right-click menu,
+`window_state` for where the card was left.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import os
-import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
+from voice_typer import tcl_paths
+
 logger = logging.getLogger(__name__)
 
 
-def _point_tcl_at_the_base_installation() -> None:
-    """Make tkinter work from inside a virtual environment on Windows.
-
-    A venv copies python.exe but not the Tcl runtime, and the search path tkinter builds
-    from `sys.prefix` looks for `lib/tcl8.6` — while the real Python installs it under
-    `tcl/tcl8.6`. The result is `TclError: Can't find a usable init.tcl` the moment a
-    window is created, which under pythonw.exe means the app dies with no message at all.
-
-    macOS keeps Tcl where tkinter expects it, so the directory this looks for is absent
-    and the function does nothing there.
-    """
-    tcl_root = Path(sys.base_prefix) / "tcl"
-    if not tcl_root.is_dir():
-        return
-
-    for variable, prefix in (("TCL_LIBRARY", "tcl"), ("TK_LIBRARY", "tk")):
-        if os.environ.get(variable):
-            continue
-        candidates = sorted(tcl_root.glob(f"{prefix}[0-9]*.[0-9]*"), reverse=True)
-        if candidates:
-            os.environ[variable] = str(candidates[0])
-
-
-_point_tcl_at_the_base_installation()
+tcl_paths.point_at_the_base_installation()
 
 import tkinter as tk  # noqa: E402 — must follow the Tcl path fix above
 
@@ -445,40 +424,28 @@ class OverlayWindow:
         self._root.after(layout.REFRESH_MS, self._refresh)
 
     def _update(self) -> None:
+        """Ask the app everything, once, and hand the answers to the drawing.
+
+        Every judgement is made here — which look the state wears, whether the level is
+        worth showing — so nothing in `card_painter` has an opinion about state. This is
+        also the only place the app is read on the Tk thread.
+        """
         state = self._controller.ui_state()
-        look = layout.APPEARANCE.get(state, layout.APPEARANCE["idle"])
-
-        theme.recolour_glow_dot(self._canvas, self._card.dot_items, look.dot, theme.CARD_TOP)
-        self._canvas.itemconfig(
-            self._card.timer_text,
-            text=layout.format_elapsed(self._controller.ui_elapsed_seconds()),
-            fill=look.timer,
+        card_painter.show(
+            self._canvas,
+            self._m,
+            self._card,
+            card_painter.Frame(
+                look=layout.APPEARANCE.get(state, layout.APPEARANCE["idle"]),
+                state=state,
+                timer=layout.format_elapsed(self._controller.ui_elapsed_seconds()),
+                hotkey=self._controller.ui_hotkey_label(),
+                notice=self._controller.ui_notice(),
+                device=self._controller.ui_device_label(),
+                # A level only means something while the microphone is open.
+                level=self._controller.ui_level() if state == "recording" else 0.0,
+            ),
         )
-        if self._collapsed:
-            # Everything below belongs to items the folded card never painted. Reaching
-            # for one of them would raise on every tick, fourteen times a second.
-            return
-
-        self._canvas.itemconfig(self._card.status_text, text=look.words)
-        self._canvas.itemconfig(self._card.badge_text, text=self._controller.ui_hotkey_label())
-        # One line, two things to say. The message wins while it lasts: which microphone
-        # is in use is the least urgent thing on the card, and the only reason someone
-        # reads that line at all is to find out why something did not happen.
-        notice = self._controller.ui_notice()
-        self._canvas.itemconfig(
-            self._card.device_text, text="" if notice else self._controller.ui_device_label()
-        )
-        if notice != self._card.shown_notice:
-            card_painter.fit_text(
-                self._canvas, self._card.notice_text, notice, self._card.notice_room
-            )
-            self._card.shown_notice = notice
-
-        # Whether the microphone is worth listening to is the window's judgement; the
-        # meter is only told what to draw.
-        level = self._controller.ui_level() if state == "recording" else 0.0
-        card_painter.show_meter(self._canvas, self._m, self._card, level=level, colour=look.wave)
-        card_buttons.update(self._canvas, self._m, self._card, state, look)
 
     # ------------------------------------------------------------------------ lifecycle
 

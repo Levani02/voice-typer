@@ -17,12 +17,59 @@ calls back.
 from __future__ import annotations
 
 import tkinter as tk
+from dataclasses import dataclass
 
 from voice_typer import card_buttons
 from voice_typer import card_layout as layout
 from voice_typer import widget_theme as theme
 from voice_typer.card_buttons import Actions
 from voice_typer.card_layout import Card, Metrics
+
+
+@dataclass(frozen=True)
+class Frame:
+    """What one tick of the clock has to say, already decided.
+
+    The window reads the app once and fills this in; nothing below ever asks a question.
+    That is what keeps every judgement — which state counts as busy, whether a level is
+    worth showing — in the one object that owns the state machine's answers.
+    """
+
+    look: layout.Look
+    state: str
+    timer: str
+    hotkey: str
+    notice: str
+    device: str
+    level: float
+
+
+def show(canvas: tk.Canvas, m: Metrics, card: Card, frame: Frame) -> None:
+    """Bring the drawing up to date with what the app currently says.
+
+    Only the pieces that change are touched. Everything else was painted once and stays
+    as it is, which is what lets this run fourteen times a second without the card
+    flickering.
+    """
+    theme.recolour_glow_dot(canvas, card.dot_items, frame.look.dot, theme.CARD_TOP)
+    canvas.itemconfig(card.timer_text, text=frame.timer, fill=frame.look.timer)
+    if card.folded:
+        # Everything below belongs to items the folded card never painted. Reaching for
+        # one of them would raise on every tick, fourteen times a second.
+        return
+
+    canvas.itemconfig(card.status_text, text=frame.look.words)
+    canvas.itemconfig(card.badge_text, text=frame.hotkey)
+    # One line, two things to say. The message wins while it lasts: which microphone is
+    # in use is the least urgent thing on the card, and the only reason someone reads
+    # that line at all is to find out why something did not happen.
+    canvas.itemconfig(card.device_text, text="" if frame.notice else frame.device)
+    if frame.notice != card.shown_notice:
+        fit_text(canvas, card.notice_text, frame.notice, card.notice_room)
+        card.shown_notice = frame.notice
+
+    show_meter(canvas, m, card, level=frame.level, colour=frame.look.wave)
+    card_buttons.update(canvas, m, card, frame.state, frame.look)
 
 
 def paint(canvas: tk.Canvas, m: Metrics, actions: Actions, *, folded: bool, rewrite: bool) -> Card:
